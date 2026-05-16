@@ -1,0 +1,25 @@
+{
+  "name": "pachu",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Pachu, an adaptive note-driven puzzles powered by FSRS + a local LLM",
+  "workspaces": [
+    "shared",
+    "backend",
+    "app"
+  ],
+  "scripts": {
+    "dev:backend": "bun run --filter @pachu/backend dev",
+    "dev:app": "bun run --filter @pachu/app start",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "echo 'no lint configured yet'"
+  },
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
