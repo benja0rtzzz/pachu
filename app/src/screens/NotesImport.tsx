@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,16 +8,22 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Animated, {
+  Easing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { palette } from '@pachu/shared';
 import { ApiError } from '../api/client';
+import { runExtraction } from '../api/extract';
 import { DitherField } from '../components/DitherField';
-import {
-  GhostLink,
-  PrimaryButton,
-} from '../components/PrimaryButton';
+import { GhostLink } from '../components/PrimaryButton';
 import { ScreenShell } from '../components/ScreenShell';
 import { TopBar } from '../components/TopBar';
 import { DEMO_NOTES } from '../mocks/demoNotes';
@@ -42,14 +48,22 @@ function inferTitle(content: string, fallback: string): string {
 
 export function NotesImportScreen() {
   const insets = useSafeAreaInsets();
-  const { navigate, goBack } = useNavigation();
-  const { spaces, createSpace, extractTerms, setActiveSpaceId } = useSpaces();
+  const { goBack, reset } = useNavigation();
+  const { spaces, createSpace, refreshSpace, setActiveSpaceId } = useSpaces();
+
+  // After import the `import` screen must NOT stay on the stack: hitting Back
+  // from the new space should land on "My spaces", not re-open the importer.
+  const openSpace = (id: string) =>
+    reset([{ name: 'landing' }, { name: 'spaces' }, { name: 'space', spaceId: id }]);
 
   const [title, setTitle] = useState('');
   const [rawMode, setRawMode] = useState(false);
   const [rawText, setRawText] = useState('');
   const [pickedFile, setPickedFile] = useState<{ name: string; size: number; ext: string } | null>(null);
   const [stage, setStage] = useState<Stage>({ kind: 'idle' });
+  // Live extraction progress streamed over the /extract WS. `value` null ⇒
+  // indeterminate (the model call); a number ⇒ determinate fill 0..1.
+  const [progress, setProgress] = useState<{ label: string; value: number | null } | null>(null);
 
   const content = rawText;
   const contentLong = content.trim().length >= MIN_CONTENT_CHARS;
@@ -88,7 +102,7 @@ export function NotesImportScreen() {
     const existing = spaces.find((s) => s.title === demo.title);
     if (existing) {
       setActiveSpaceId(existing.id);
-      navigate({ name: 'space', spaceId: existing.id });
+      openSpace(existing.id);
       return;
     }
     setTitle(demo.title);
@@ -117,14 +131,34 @@ export function NotesImportScreen() {
     }
 
     setStage({ kind: 'extracting', spaceId });
+    setProgress({ label: 'Preparing notes…', value: 0.04 });
     try {
-      await extractTerms(spaceId);
-      navigate({ name: 'space', spaceId });
+      await runExtraction(spaceId, (info) => {
+        if (info.stage === 'preparing') {
+          setProgress({ label: 'Preparing notes…', value: 0.05 });
+        } else if (info.stage === 'calling-model') {
+          setProgress({ label: 'Asking the model…', value: null });
+        } else if (info.stage === 'verifying') {
+          const frac =
+            info.total && info.total > 0 ? (info.current ?? 0) / info.total : 0;
+          setProgress({
+            label: `Verifying ${info.current ?? 0}/${info.total ?? '?'}…`,
+            value: 0.55 + 0.4 * frac,
+          });
+        } else if (info.stage === 'persisting') {
+          setProgress({ label: 'Saving terms…', value: 0.97 });
+        }
+      });
+      // Pull the now-populated space into session state, then open it.
+      await refreshSpace(spaceId);
+      setProgress(null);
+      openSpace(spaceId);
     } catch (err) {
+      setProgress(null);
       if (err instanceof ApiError) {
         if (err.status === 409) {
           // Already extracted — navigate straight in.
-          navigate({ name: 'space', spaceId });
+          openSpace(spaceId);
           return;
         }
         if (err.status === 422) {
@@ -147,7 +181,7 @@ export function NotesImportScreen() {
 
   const skipExtractionAndOpen = () => {
     if (stage.kind === 'error' && stage.recoverableSpaceId) {
-      navigate({ name: 'space', spaceId: stage.recoverableSpaceId });
+      openSpace(stage.recoverableSpaceId);
     }
   };
 
@@ -278,27 +312,29 @@ export function NotesImportScreen() {
           { paddingBottom: spacing.lg + insets.bottom },
         ]}
       >
-        {isBusy && (
-          <View style={styles.progressRow}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.progressLabel}>
-              {stage.kind === 'storing'
-                ? 'Storing notes…'
-                : 'Extracting terms… (this can take ~30s)'}
-            </Text>
-          </View>
-        )}
         {!isBusy && !contentLong && content.length > 0 && (
           <Text style={styles.progressLabel}>
             Notes look short — paste at least {MIN_CONTENT_CHARS} characters.
           </Text>
         )}
-        <PrimaryButton
-          full
-          label="Create space"
+        {stage.kind === 'extracting' && (
+          <Text style={styles.progressLabel}>
+            Reading your notes with the model — this can take ~30–60s. Keep the
+            app open.
+          </Text>
+        )}
+        <LoadingBarButton
+          label={
+            stage.kind === 'storing'
+              ? 'Storing notes…'
+              : stage.kind === 'extracting'
+                ? progress?.label ?? 'Extracting terms…'
+                : 'Create space'
+          }
           onPress={runChain}
           disabled={!canSubmit}
           loading={isBusy}
+          value={stage.kind === 'extracting' ? progress?.value ?? null : null}
         />
       </View>
 
@@ -308,7 +344,110 @@ export function NotesImportScreen() {
   );
 }
 
+/**
+ * Full-width primary action that doubles as an indeterminate progress bar
+ * while the LLM extracts terms. The sweeping fill communicates "working,
+ * unknown duration" better than a bare spinner for a multi-second wait.
+ */
+function LoadingBarButton({
+  label,
+  loading,
+  disabled,
+  onPress,
+  value,
+}: {
+  label: string;
+  loading: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+  /** 0..1 determinate fill; null/undefined ⇒ indeterminate sweep. */
+  value?: number | null;
+}) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (!loading) {
+      cancelAnimation(progress);
+      progress.value = 0;
+      return;
+    }
+    if (typeof value === 'number') {
+      // Real progress — ease to the reported fraction.
+      cancelAnimation(progress);
+      progress.value = withTiming(Math.min(1, Math.max(0.06, value)), {
+        duration: 400,
+        easing: Easing.out(Easing.cubic),
+      });
+    } else {
+      // Unknown duration (the model call) — repeating sweep.
+      progress.value = 0;
+      progress.value = withRepeat(
+        withTiming(1, { duration: 1500, easing: Easing.inOut(Easing.cubic) }),
+        -1,
+        false,
+      );
+    }
+    return () => cancelAnimation(progress);
+  }, [loading, value, progress]);
+
+  const fillStyle = useAnimatedStyle(() => ({
+    width: `${Math.max(6, progress.value * 100)}%`,
+  }));
+
+  const isDisabled = disabled || loading;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={isDisabled}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: isDisabled, busy: loading }}
+      style={[
+        styles.lbBtn,
+        isDisabled && !loading && styles.lbDisabled,
+      ]}
+    >
+      {loading && <Animated.View style={[styles.lbFill, fillStyle]} />}
+      <View style={styles.lbRow}>
+        {loading && <ActivityIndicator color={colors.textOnAccent} size="small" />}
+        <Text style={styles.lbLabel}>{label}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  lbBtn: {
+    alignSelf: 'stretch',
+    height: 54,
+    borderRadius: radii.md,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    ...shadows.button,
+  },
+  lbDisabled: {
+    opacity: 0.5,
+  },
+  lbFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  lbRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  lbLabel: {
+    color: colors.textOnAccent,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.body,
+    letterSpacing: -0.08,
+  },
   scroll: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xs,

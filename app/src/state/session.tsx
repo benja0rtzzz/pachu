@@ -13,7 +13,6 @@ import type {
   FlashcardsPuzzle,
   IngestRequest,
   Puzzle,
-  PuzzleKind,
   Review,
   SessionFinishResponse,
   Space,
@@ -29,13 +28,6 @@ import { ingestNotes } from '../api/notes';
 import { finishPuzzle as apiFinishPuzzle } from '../api/puzzles';
 import { loadPersistedSession, savePersistedSession } from './persistence';
 
-/** Lightweight handle a screen needs to "resume" an in-flight puzzle. */
-export interface ResumablePuzzle {
-  kind: PuzzleKind;
-  puzzleId: string;
-  spaceId: string;
-  spaceTitle?: string;
-}
 
 interface SessionState {
   activePuzzle: Puzzle | null;
@@ -171,12 +163,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         await apiDeleteSpace(id);
         if (activeSpaceId === id) setActiveSpaceId(null);
+        // Drop any in-flight puzzle for this space too, otherwise the Landing
+        // "Resume" link still points at — and reopens — a deleted game.
+        if (activePuzzle?.spaceId === id) setActivePuzzle(null);
       } catch (err) {
         if (removed) setSpaces((prev) => [removed!, ...prev]);
         throw err;
       }
     },
-    [activeSpaceId],
+    [activeSpaceId, activePuzzle, setActivePuzzle],
   );
 
   const finishActivePuzzle = useCallback(
@@ -300,17 +295,12 @@ export function useSession(): SessionContextValue {
  * instead of `useSession` directly; the spread surface here is the
  * `useSpaces()` contract called out under Cross-cutting in
  * `docs/SCREENS.md`.
- *
- * `resumablePuzzle` is derived from the in-memory `activePuzzle` so an
- * accidental back-tap to landing doesn't lose in-flight work. Not
- * persisted across reloads yet — see Phase 4 AsyncStorage item.
  */
 export function useSpaces() {
   const {
     spaces,
     spacesLoading,
     spacesError,
-    activePuzzle,
     activeSpaceId,
     activeSpace,
     setActiveSpaceId,
@@ -323,24 +313,12 @@ export function useSpaces() {
     deleteSpace,
   } = useSession();
 
-  const resumablePuzzle = useMemo<ResumablePuzzle | null>(() => {
-    if (!activePuzzle) return null;
-    const space = spaces.find((s) => s.id === activePuzzle.spaceId);
-    return {
-      kind: activePuzzle.kind,
-      puzzleId: activePuzzle.id,
-      spaceId: activePuzzle.spaceId,
-      spaceTitle: space?.title,
-    };
-  }, [activePuzzle, spaces]);
-
   return {
     spaces,
     loading: spacesLoading,
     error: spacesError,
     activeSpaceId,
     activeSpace,
-    resumablePuzzle,
     setActiveSpaceId,
     setActivePuzzle,
     refreshSpaces,

@@ -4,7 +4,14 @@ import type {
   SessionFinishRequest,
   SessionFinishResponse,
 } from '@pachu/shared';
-import { apiFetch } from './client';
+import { apiFetch, ApiError } from './client';
+
+/** Saved progress payload for a puzzle (shape is screen-defined per kind). */
+export interface PuzzleProgressResponse {
+  puzzle: Puzzle | null;
+  progress: unknown | null;
+  finished: boolean;
+}
 
 /**
  * Generate a puzzle of the requested `kind` for a given space. Backend
@@ -33,4 +40,41 @@ export async function finishPuzzle(
     `/puzzles/${encodeURIComponent(puzzleId)}/finish`,
     { method: 'POST', body },
   );
+}
+
+/**
+ * Fetch saved progress for an in-flight puzzle. Returns `null` when the
+ * backend has no progress row (404) so callers can treat "fresh start" and
+ * "resume" uniformly.
+ */
+export async function getPuzzleProgress(
+  puzzleId: string,
+): Promise<PuzzleProgressResponse | null> {
+  try {
+    return await apiFetch<PuzzleProgressResponse>(
+      `/puzzles/${encodeURIComponent(puzzleId)}/progress`,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Persist the current per-term progress blob. Fire-and-forget from the
+ * screens (called on Submit / Reveal / grade); failures are swallowed so a
+ * flaky network never blocks play.
+ */
+export async function savePuzzleProgress(
+  puzzleId: string,
+  progress: unknown,
+): Promise<void> {
+  try {
+    await apiFetch<void>(`/puzzles/${encodeURIComponent(puzzleId)}/progress`, {
+      method: 'PUT',
+      body: { progress },
+    });
+  } catch {
+    // best-effort; progress saving must never interrupt the session
+  }
 }

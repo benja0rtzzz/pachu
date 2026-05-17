@@ -47,11 +47,15 @@ import {
   appendReviewEvent,
   createSession,
   endSession,
+  getActivePuzzleForSpace,
   getNotesFile,
   getNotesFileWithText,
+  getPuzzleProgress,
   getSession,
   getTermById,
   listFsrsCardsByNotesFile,
+  savePuzzleProgress,
+  savePuzzleSnapshot,
 } from '../store/index.js';
 
 const TARGET_COUNT_DEFAULTS: Record<PuzzleKind, number> = {
@@ -126,6 +130,20 @@ export function puzzlesRouter(opts: { llm: LlmAdapter }): Router {
         : TARGET_COUNT_DEFAULTS[kind];
     const targetCount = Math.min(Math.max(1, Math.floor(requested)), TARGET_COUNT_CEILING);
 
+    // Resume: if there's an unfinished session of this kind for the space,
+    // hand back the EXACT stored puzzle (frozen order — Cloze never reorders
+    // on resume) instead of generating a fresh, reordered one.
+    const resumable = getActivePuzzleForSpace(spaceId, kind);
+    if (resumable) {
+      try {
+        const stored = JSON.parse(resumable.puzzleJson) as Puzzle;
+        res.json(stored);
+        return;
+      } catch {
+        // Corrupted snapshot — fall through and regenerate a new one.
+      }
+    }
+
     const picks = pickTerms(spaceId, { count: targetCount });
     if (picks.length === 0) {
       res.status(422).json({
@@ -178,6 +196,14 @@ export function puzzlesRouter(opts: { llm: LlmAdapter }): Router {
         }
         puzzle = out;
       }
+
+      // Freeze the generated puzzle so a resume returns it verbatim.
+      savePuzzleSnapshot({
+        sessionId: session.id,
+        notesFileId: spaceId,
+        puzzleKind: kind,
+        puzzleJson: JSON.stringify(puzzle),
+      });
 
       res.json(puzzle);
     } catch (err) {
@@ -246,6 +272,61 @@ export function puzzlesRouter(opts: { llm: LlmAdapter }): Router {
       space: toSpace(session.notesFileId),
     };
     res.json(response);
+  });
+
+  // Resume payload: the frozen puzzle + the last-saved client progress blob.
+  r.get('/:id/progress', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'id required' });
+      return;
+    }
+    const row = getPuzzleProgress(id);
+    if (!row) {
+      res.status(404).json({ error: 'no progress for this puzzle' });
+      return;
+    }
+    let puzzle: unknown = null;
+    let progress: unknown = null;
+    try {
+      puzzle = JSON.parse(row.puzzleJson);
+    } catch {
+      // leave null
+    }
+    if (row.progressJson) {
+      try {
+        progress = JSON.parse(row.progressJson);
+      } catch {
+        // leave null
+      }
+    }
+    const session = getSession(id);
+    res.json({ puzzle, progress, finished: session?.endedAt != null });
+  });
+
+  // Save the client progress blob. Called on Submit / Reveal / grade.
+  r.put('/:id/progress', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'id required' });
+      return;
+    }
+    const session = getSession(id);
+    if (!session) {
+      res.status(404).json({ error: 'session not found' });
+      return;
+    }
+    if (session.endedAt) {
+      res.status(409).json({ error: 'session already finished' });
+      return;
+    }
+    const body = (req.body ?? {}) as { progress?: unknown };
+    if (body.progress === undefined) {
+      res.status(400).json({ error: 'progress is required' });
+      return;
+    }
+    savePuzzleProgress(id, JSON.stringify(body.progress));
+    res.status(204).send();
   });
 
   return r;

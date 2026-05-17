@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActionSheetIOS,
-  Alert,
   Platform,
   Pressable,
   RefreshControl,
@@ -74,8 +73,10 @@ export function SpacesScreen() {
 
   const toast = useToast();
   const [refreshing, setRefreshing] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Space | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<Space | null>(null);
 
   const sorted = useMemo(() => sortSpaces(spaces), [spaces]);
   const totalDue = useMemo(
@@ -119,20 +120,23 @@ export function SpacesScreen() {
     }
   };
 
+  // In-app confirm modal instead of Alert/ActionSheet: RN's Alert button
+  // callbacks don't fire on react-native-web and ActionSheetIOS is iOS-only,
+  // which is why "Delete" appeared to do nothing.
   const confirmDelete = (space: Space) => {
-    const message = 'This deletes terms, FSRS history, and all puzzles. Cannot be undone.';
-    const doDelete = async () => {
-      try {
-        await deleteSpace(space.id);
-        toast.show({ message: `Deleted "${space.title}"`, tone: 'info' });
-      } catch (err) {
-        toast.show({ message: `Delete failed: ${(err as Error).message}`, tone: 'error' });
-      }
-    };
-    Alert.alert(`Delete "${space.title}"?`, message, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => void doDelete() },
-    ]);
+    setDeleteTarget(space);
+  };
+
+  const performDelete = async () => {
+    const space = deleteTarget;
+    if (!space) return;
+    setDeleteTarget(null);
+    try {
+      await deleteSpace(space.id);
+      toast.show({ message: `Deleted "${space.title}"`, tone: 'info' });
+    } catch (err) {
+      toast.show({ message: `Delete failed: ${(err as Error).message}`, tone: 'error' });
+    }
   };
 
   const openActionSheet = (space: Space) => {
@@ -151,11 +155,10 @@ export function SpacesScreen() {
       );
       return;
     }
-    Alert.alert(space.title, undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Rename space', onPress: () => promptRename(space) },
-      { text: 'Delete space', style: 'destructive', onPress: () => confirmDelete(space) },
-    ]);
+    // Non-iOS (incl. web): the action sheet has the same Alert limitation,
+    // so go straight to the rename flow on long-press; Delete lives in the
+    // visible Edit-mode controls.
+    promptRename(space);
   };
 
   return (
@@ -184,12 +187,27 @@ export function SpacesScreen() {
       />
 
       <View style={styles.headerRow}>
-        <Text style={styles.h2}>
-          {spaces.length} {spaces.length === 1 ? 'space' : 'spaces'}
-        </Text>
-        <Text style={styles.h2Sub}>
-          {totalDue} {totalDue === 1 ? 'item' : 'items'} due across all spaces
-        </Text>
+        <View style={styles.headerRowText}>
+          <Text style={styles.h2}>
+            {spaces.length} {spaces.length === 1 ? 'space' : 'spaces'}
+          </Text>
+          <Text style={styles.h2Sub}>
+            {totalDue} {totalDue === 1 ? 'item' : 'items'} due across all spaces
+          </Text>
+        </View>
+        {spaces.length > 0 && (
+          <Pressable
+            onPress={() => setEditing((e) => !e)}
+            accessibilityRole="button"
+            accessibilityLabel={editing ? 'Done editing spaces' : 'Edit spaces'}
+            hitSlop={8}
+            style={[styles.editBtn, editing && styles.editBtnActive]}
+          >
+            <Text style={[styles.editBtnLabel, editing && styles.editBtnLabelActive]}>
+              {editing ? 'Done' : 'Edit'}
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       {error && <Text style={styles.errorBanner}>Couldn't load spaces — {error}</Text>}
@@ -222,8 +240,11 @@ export function SpacesScreen() {
             <SpaceRow
               key={space.id}
               space={space}
+              editing={editing}
               onOpen={() => openSpace(space)}
               onLongPress={() => openActionSheet(space)}
+              onRename={() => promptRename(space)}
+              onDelete={() => confirmDelete(space)}
             />
           ))
         )}
@@ -252,18 +273,44 @@ export function SpacesScreen() {
           </View>
         </View>
       )}
+
+      {deleteTarget && (
+        <View style={styles.renameOverlay}>
+          <View style={styles.renameCard}>
+            <Text style={styles.renameTitle}>Delete “{deleteTarget.title}”?</Text>
+            <Text style={styles.deleteBody}>
+              This permanently removes its terms, FSRS history, and every
+              puzzle. This can’t be undone.
+            </Text>
+            <View style={styles.renameActions}>
+              <Pressable onPress={() => setDeleteTarget(null)} style={styles.renameCancel}>
+                <Text style={styles.renameCancelLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={performDelete} style={styles.deleteConfirm}>
+                <Text style={styles.deleteConfirmLabel}>Delete</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      )}
     </ScreenShell>
   );
 }
 
 function SpaceRow({
   space,
+  editing,
   onOpen,
   onLongPress,
+  onRename,
+  onDelete,
 }: {
   space: Space;
+  editing: boolean;
   onOpen: () => void;
   onLongPress: () => void;
+  onRename: () => void;
+  onDelete: () => void;
 }) {
   const { summary } = space;
   const ratio =
@@ -280,10 +327,10 @@ function SpaceRow({
 
   return (
     <Pressable
-      onPress={onOpen}
-      onLongPress={onLongPress}
+      onPress={editing ? onRename : onOpen}
+      onLongPress={editing ? undefined : onLongPress}
       delayLongPress={350}
-      style={styles.row}
+      style={[styles.row, editing && styles.rowEditing]}
     >
       <View style={styles.rowHeader}>
         <View style={styles.rowTitleWrap}>
@@ -325,6 +372,23 @@ function SpaceRow({
           </View>
         )}
       </View>
+
+      {editing && (
+        <View style={styles.editActions}>
+          <Pressable onPress={onRename} style={styles.editAction} hitSlop={6}>
+            <Text style={styles.editActionLabel}>Rename</Text>
+          </Pressable>
+          <Pressable
+            onPress={onDelete}
+            style={[styles.editAction, styles.editActionDanger]}
+            hitSlop={6}
+          >
+            <Text style={[styles.editActionLabel, styles.editActionDangerLabel]}>
+              Delete
+            </Text>
+          </Pressable>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -352,8 +416,37 @@ const styles = StyleSheet.create({
     ...shadows.pill,
   },
   headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
+  },
+  headerRowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  editBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface,
+  },
+  editBtnActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  editBtnLabel: {
+    color: colors.text,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.bodySm,
+  },
+  editBtnLabelActive: {
+    color: colors.textOnAccent,
   },
   h2: {
     color: colors.text,
@@ -424,6 +517,38 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: 18,
     gap: 12,
+  },
+  rowEditing: {
+    borderColor: colors.borderStrong,
+  },
+  editActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  editAction: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface,
+  },
+  editActionLabel: {
+    color: colors.text,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.bodySm,
+  },
+  editActionDanger: {
+    borderColor: 'rgba(177,8,4,0.35)',
+    backgroundColor: 'rgba(177,8,4,0.06)',
+  },
+  editActionDangerLabel: {
+    color: '#b10804',
   },
   rowHeader: {
     flexDirection: 'row',
@@ -571,6 +696,25 @@ const styles = StyleSheet.create({
   },
   renameSaveLabel: {
     color: colors.textOnAccent,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.body,
+  },
+  deleteBody: {
+    color: colors.muted,
+    fontFamily: fonts.ui.regular,
+    fontSize: typography.bodySm,
+    lineHeight: 20,
+  },
+  deleteConfirm: {
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: radii.md,
+    backgroundColor: '#b10804',
+    ...shadows.button,
+  },
+  deleteConfirmLabel: {
+    color: '#fff',
     fontFamily: fonts.ui.semibold,
     fontWeight: '600',
     fontSize: typography.body,

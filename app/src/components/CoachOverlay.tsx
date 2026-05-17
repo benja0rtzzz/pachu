@@ -15,8 +15,8 @@ import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
 // `hint` events for the current term, and renders them as a stack of cards
 // (1 for Cloze, up to 3 for Crossword per the SCREENS.md stretch item).
 //
-// Each tier is styled distinctly so a judge can see the escalation
-// (nudge → pattern → definition) without reading the body text.
+// Each tier is styled distinctly so the escalation (pattern → contextual
+// nudge) reads at a glance without parsing the body text.
 
 type Props = {
   termId: string | null;
@@ -25,19 +25,20 @@ type Props = {
 };
 
 const TIER_LABEL: Record<1 | 2 | 3, string> = {
-  1: 'Nudge',
-  2: 'Pattern',
-  3: 'Definition',
+  1: 'Pattern',
+  2: 'Hint',
+  // tier 3 is retired; kept defensively in case a stale event arrives.
+  3: 'Hint',
 };
 
 const TIER_TINT: Record<1 | 2 | 3, { bg: string; border: string; fg: string }> = {
-  1: { bg: 'rgba(0,104,255,0.08)', border: 'rgba(0,104,255,0.2)', fg: colors.accent },
-  2: {
+  1: {
     bg: 'rgba(127,176,105,0.14)',
     border: 'rgba(127,176,105,0.32)',
     fg: palette.sage,
   },
-  3: { bg: palette.ink06, border: palette.ink10, fg: colors.text },
+  2: { bg: 'rgba(0,104,255,0.08)', border: 'rgba(0,104,255,0.2)', fg: colors.accent },
+  3: { bg: 'rgba(0,104,255,0.08)', border: 'rgba(0,104,255,0.2)', fg: colors.accent },
 };
 
 export function CoachOverlay({ termId, maxVisible = 1 }: Props) {
@@ -89,7 +90,7 @@ export function CoachOverlay({ termId, maxVisible = 1 }: Props) {
             key={key}
             style={[
               styles.card,
-              { backgroundColor: tint.bg, borderColor: tint.border },
+              { borderLeftColor: tint.fg },
             ]}
           >
             <View style={styles.cardHeader}>
@@ -124,17 +125,22 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: spacing.md,
     right: spacing.md,
-    bottom: spacing.md + 60,
+    // Sit well clear of the footer/keyboard so the hint reads on its own
+    // rather than crowding the action buttons.
+    bottom: spacing.md + 150,
     gap: spacing.sm,
     zIndex: 20,
   },
   card: {
     borderRadius: radii.md,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    borderColor: colors.border,
+    borderLeftWidth: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     gap: 6,
-    ...shadows.card,
+    ...shadows.hero,
   },
   cardHeader: {
     flexDirection: 'row',

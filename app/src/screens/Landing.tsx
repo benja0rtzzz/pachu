@@ -4,9 +4,8 @@ import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { HealthResponse } from '@pachu/shared';
 import { getHealth } from '../api/client';
-import { DitherField } from '../components/DitherField';
+import { DoveCornerMark } from '../components/DoveCornerMark';
 import {
-  GhostLink,
   PrimaryButton,
   SecondaryButton,
 } from '../components/PrimaryButton';
@@ -50,7 +49,7 @@ function useLlmReachable(): { llmReachable: boolean; loading: boolean } {
 
 export function LandingScreen() {
   const { navigate } = useNavigation();
-  const { spaces, loading: spacesLoading, resumablePuzzle } = useSpaces();
+  const { spaces, loading: spacesLoading } = useSpaces();
   const { llmReachable, loading: healthLoading } = useLlmReachable();
   const insets = useSafeAreaInsets();
 
@@ -64,27 +63,23 @@ export function LandingScreen() {
 
   const handleRegister = () => navigate({ name: 'import' });
   const handleExplore = () => navigate({ name: 'spaces' });
-  const handleResume = () => {
-    if (!resumablePuzzle) return;
-    navigate({ name: resumablePuzzle.kind, puzzleId: resumablePuzzle.puzzleId });
-  };
 
   return (
     <ScreenShell>
-      {/* Top half — dither hero with wordmark */}
-      <View style={styles.hero}>
-        <View style={StyleSheet.absoluteFill}>
-          <DitherField intensity="hero" gradient="bottom" color={colors.accent} />
-        </View>
+      {/* Vector-mapped from the logo reference, cropped at the dove's midline. */}
+      <View style={styles.dovePane} pointerEvents="none">
+        <DoveCornerMark color={colors.accent} />
+      </View>
 
+      {/* Top half — hero with wordmark */}
+      <View style={styles.hero}>
         {/* Status-bar gradient guard so the wordmark stays readable */}
         <View style={[styles.statusGuard, { height: insets.top + 32 }]} pointerEvents="none" />
 
         <View style={[styles.wordmarkWrap, { paddingBottom: 36 }]} pointerEvents="none">
           <Text style={styles.eyebrow}>An adaptive notes engine</Text>
           <Text style={styles.wordmark}>
-            Puzzle{'\n'}Forge{'\n'}
-            <Text style={styles.wordmarkAccent}>Coach</Text>
+            Pa<Text style={styles.wordmarkAccent}>chu</Text>
           </Text>
         </View>
       </View>
@@ -144,15 +139,6 @@ export function LandingScreen() {
           {!hasSpaces && !spacesLoading && (
             <Text style={styles.hint}>No spaces yet</Text>
           )}
-
-          {resumablePuzzle && (
-            <GhostLink
-              label={`Resume ${resumablePuzzle.kind}${
-                resumablePuzzle.spaceTitle ? ` in ${resumablePuzzle.spaceTitle}` : ''
-              }`}
-              onPress={handleResume}
-            />
-          )}
         </View>
       </View>
     </ScreenShell>
@@ -164,8 +150,15 @@ const styles = StyleSheet.create({
     position: 'relative',
     height: '52%',
     minHeight: 380,
-    backgroundColor: colors.surface,
-    overflow: 'hidden',
+    backgroundColor: 'transparent',
+  },
+  dovePane: {
+    position: 'absolute',
+    top: -18,
+    right: 8,
+    width: '61%',
+    height: '61%',
+    opacity: 0.9,
   },
   statusGuard: {
     position: 'absolute',
@@ -205,7 +198,7 @@ const styles = StyleSheet.create({
   },
   actionsHalf: {
     flex: 1,
-    backgroundColor: colors.surface,
+    backgroundColor: 'transparent',
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xl,
     justifyContent: 'space-between',

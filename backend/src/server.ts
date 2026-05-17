@@ -8,6 +8,7 @@ import { puzzlesRouter } from './routes/puzzles.js';
 import { spacesRouter } from './routes/spaces.js';
 import { openDatabase } from './store/db.js';
 import { attachCoachWs } from './ws/coach.js';
+import { attachExtractWs } from './ws/extract.js';
 
 async function main() {
   openDatabase();
@@ -38,6 +39,21 @@ async function main() {
 
   const server = http.createServer(app);
   attachCoachWs({ server, path: '/coach', llm });
+  attachExtractWs({ server, path: '/extract', llm });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `[pachu-backend] port ${config.port} is already in use — likely an ` +
+          `orphaned 'bun --watch' from a previous run. Free it with:\n` +
+          `  lsof -nP -iTCP:${config.port} -sTCP:LISTEN   # find the PID\n` +
+          `  kill <pid>                                   # then re-run`,
+      );
+    } else {
+      console.error('[pachu-backend] server error:', err);
+    }
+    process.exit(1);
+  });
 
   server.listen(config.port, config.host, () => {
     const reachable = `http://${config.host === '0.0.0.0' ? 'localhost' : config.host}:${config.port}`;

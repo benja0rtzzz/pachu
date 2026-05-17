@@ -31,6 +31,63 @@ export interface CrosswordEngineInput {
   puzzleId?: string;
 }
 
+// A crossword answer is one cell per letter, so a 110-letter "term" produced
+// an unreadable grid. We feed the solver single-token answers in a sane
+// length band and size the puzzle by *total letters* (~55 across all answers)
+// so the average crossword is consistently solvable on a phone screen.
+const MIN_ANSWER_LEN = 3;
+const MAX_ANSWER_LEN = 14;
+const MAX_ENTRIES = 14;
+const TARGET_TOTAL_LETTERS = 65;
+const MIN_ENTRIES_BEFORE_STOP = 4;
+
+function letterLen(term: Term): number {
+  const n = term.term.replace(/[^A-Za-z]/g, '').length;
+  return n || term.term.trim().length;
+}
+
+function crosswordEligible(term: Term): boolean {
+  const w = term.term.trim();
+  if (/\s/.test(w)) return false; // single token only — no phrases
+  if (!/^[A-Za-z][A-Za-z'-]*$/.test(w)) return false; // letters (plus -/') only
+  const letters = w.replace(/[^A-Za-z]/g, '');
+  return letters.length >= MIN_ANSWER_LEN && letters.length <= MAX_ANSWER_LEN;
+}
+
+/**
+ * Pick answers so the summed letter count lands near TARGET_TOTAL_LETTERS
+ * (~55) — that's the "55 flat average" target. Shortest-first so short words
+ * interlock well and we can fit more of them before hitting the budget; we
+ * require a few entries before stopping so a couple of long words can't end
+ * the puzzle early. Falls back to raw terms if none are eligible.
+ */
+function selectCrosswordTerms(terms: Term[]): Term[] {
+  const eligible = terms
+    .filter(crosswordEligible)
+    .sort((a, b) => letterLen(a) - letterLen(b));
+  const pool =
+    eligible.length > 0
+      ? eligible
+      : [...terms].sort((a, b) => letterLen(a) - letterLen(b));
+
+  const chosen: Term[] = [];
+  let total = 0;
+  for (const t of pool) {
+    if (chosen.length >= MAX_ENTRIES) break;
+    const len = letterLen(t);
+    if (
+      total + len > TARGET_TOTAL_LETTERS &&
+      chosen.length >= MIN_ENTRIES_BEFORE_STOP
+    ) {
+      break;
+    }
+    chosen.push(t);
+    total += len;
+  }
+  if (chosen.length === 0 && pool.length > 0) chosen.push(pool[0]!);
+  return chosen;
+}
+
 async function buildClueRows(
   terms: Term[],
   llm: LlmAdapter,
@@ -60,7 +117,7 @@ export const crosswordEngine: PuzzleEngine<CrosswordEngineInput, CrosswordPuzzle
   id: 'crossword',
 
   async generate(input) {
-    const rows = await buildClueRows(input.terms, input.llm);
+    const rows = await buildClueRows(selectCrosswordTerms(input.terms), input.llm);
 
     // `crossword-layout-generator` mutates / inspects its input array but only by shape;
     // we pass a fresh objects-only array to be safe.

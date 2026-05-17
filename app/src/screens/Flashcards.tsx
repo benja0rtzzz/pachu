@@ -10,11 +10,24 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Rating, Review, SessionFinishResponse } from '@pachu/shared';
 import { ProgressBar } from '../components/ProgressBar';
+import { PuzzleComplete } from '../components/PuzzleComplete';
 import { PuzzleShell } from '../components/PuzzleShell';
 import { SecondaryButton } from '../components/PrimaryButton';
+import { getPuzzleProgress, savePuzzleProgress } from '../api/puzzles';
 import { useNavigation } from '../navigation/NavigationContext';
 import { isFlashcardsPuzzle, useSession, useSpaces } from '../state/session';
+
+interface FlashProgress {
+  index: number;
+  reviews: Review[];
+}
 import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
+
+// Flip duration, plus the settle delay before the next card's content is
+// swapped in. Swapping earlier than the flip-back completes briefly exposes
+// the *next* card's answer through the still-rotating face.
+const FLIP_MS = 560;
+const NEXT_CARD_DELAY_MS = FLIP_MS + 40;
 
 const GRADES: { rating: Rating; label: string; tone: 'subtle' | 'accent-bg' | 'accent' }[] = [
   { rating: 1, label: 'Again', tone: 'subtle' },
@@ -63,7 +76,7 @@ export function FlashcardsScreen() {
 
   useEffect(() => {
     flip.value = withTiming(flipped ? 1 : 0, {
-      duration: 550,
+      duration: FLIP_MS,
       easing: Easing.bezier(0.4, 0, 0.2, 1),
     });
   }, [flip, flipped]);
@@ -71,6 +84,27 @@ export function FlashcardsScreen() {
   useEffect(() => {
     setCardShownAt(Date.now());
   }, [index]);
+
+  // Resume: pull saved progress once and restore the deck position + ratings.
+  const puzzleId = puzzle?.id;
+  const itemCount = puzzle?.items.length ?? 0;
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (!puzzleId || hydratedRef.current) return;
+    hydratedRef.current = true;
+    void getPuzzleProgress(puzzleId).then((p) => {
+      const prog = p?.progress as FlashProgress | undefined;
+      if (!prog) return;
+      if (Array.isArray(prog.reviews)) reviewsRef.current = prog.reviews;
+      if (
+        typeof prog.index === 'number' &&
+        prog.index > 0 &&
+        prog.index < itemCount
+      ) {
+        setIndex(prog.index);
+      }
+    });
+  }, [puzzleId, itemCount]);
 
   const frontStyle = useAnimatedStyle(() => ({
     transform: [
@@ -84,6 +118,24 @@ export function FlashcardsScreen() {
       { rotateY: `${interpolate(flip.value, [0, 1], [180, 360])}deg` },
     ],
   }));
+
+  // Summary first: finishing the session clears `activePuzzle`, which would
+  // otherwise fall through to the "No flashcards loaded" guard below.
+  if (summary) {
+    const c = summary.counts;
+    const dueLine = formatDueTime(summary.response?.nextDueAt);
+    return (
+      <PuzzleShell title="Flashcards" onBack={goBack} ditherIntensity="low">
+        <PuzzleComplete
+          headline={`${summary.total} ${summary.total === 1 ? 'card' : 'cards'} reviewed`}
+          detail={`${c[3]} good · ${c[2]} hard · ${c[1]} again · ${c[4]} easy`}
+          footnote={`Next due in ${summary.spaceTitle}: ${dueLine}`}
+          error={finishError}
+          onBack={goBack}
+        />
+      </PuzzleShell>
+    );
+  }
 
   if (!puzzle || puzzle.items.length === 0) {
     return (
@@ -110,10 +162,14 @@ export function FlashcardsScreen() {
     reviewsRef.current.push({ termId: card.termId, rating, ms, hintsUsed: 0 });
 
     if (!isLast) {
+      void savePuzzleProgress(puzzle.id, {
+        index: index + 1,
+        reviews: reviewsRef.current,
+      } satisfies FlashProgress);
       setFlipped(false);
-      // Reanimated swaps run before the index change registers; wait a frame
-      // so the card flips back cleanly before the next front renders.
-      setTimeout(() => setIndex((i) => i + 1), 80);
+      // Wait for the flip-back to fully complete before swapping in the next
+      // card — otherwise the next answer flashes through the rotating face.
+      setTimeout(() => setIndex((i) => i + 1), NEXT_CARD_DELAY_MS);
       return;
     }
 
@@ -141,37 +197,10 @@ export function FlashcardsScreen() {
     }
   };
 
-  if (summary) {
-    const c = summary.counts;
-    const dueLine = formatDueTime(summary.response?.nextDueAt);
-    return (
-      <PuzzleShell title="Flashcards" onBack={goBack} ditherIntensity="low">
-        <View style={[styles.summaryWrap, { paddingBottom: spacing.xl + insets.bottom }]}>
-          <Text style={styles.summaryEyebrow}>Session complete</Text>
-          <Text style={styles.summaryHeadline}>
-            {summary.total} {summary.total === 1 ? 'card' : 'cards'} reviewed
-          </Text>
-          <Text style={styles.summaryBody}>
-            {c[3]} good · {c[2]} hard · {c[1]} again · {c[4]} easy
-          </Text>
-          <Text style={styles.summaryNext}>
-            Next due in <Text style={styles.summarySpace}>{summary.spaceTitle}</Text>: {dueLine}
-          </Text>
-          {finishError && <Text style={styles.errorBanner}>{finishError}</Text>}
-          <SecondaryButton
-            label="Back to space"
-            onPress={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
-            full
-          />
-        </View>
-      </PuzzleShell>
-    );
-  }
-
   return (
     <PuzzleShell
       title="Flashcards"
-      onBack={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
+      onBack={goBack}
       ditherIntensity="medium"
     >
       <View style={styles.progressWrap}>
@@ -183,7 +212,14 @@ export function FlashcardsScreen() {
           <Animated.View style={[styles.cardFace, styles.cardFront, frontStyle]}>
             <Text style={styles.cardTag}>Flashcard</Text>
             <View style={styles.cardCenter}>
-              <Text style={styles.cardFrontText}>{card.front}</Text>
+              <Text
+                style={styles.cardFrontText}
+                numberOfLines={6}
+                adjustsFontSizeToFit
+                minimumFontScale={0.5}
+              >
+                {card.front}
+              </Text>
             </View>
             <View style={styles.cardHintRow}>
               <Text style={styles.cardHintText}>Tap to flip</Text>
@@ -192,7 +228,14 @@ export function FlashcardsScreen() {
           <Animated.View style={[styles.cardFace, styles.cardBack, backStyle]}>
             <Text style={[styles.cardTag, styles.cardTagInverse]}>Flashcard</Text>
             <View style={styles.cardCenter}>
-              <Text style={styles.cardBackText}>{card.back}</Text>
+              <Text
+                style={styles.cardBackText}
+                numberOfLines={9}
+                adjustsFontSizeToFit
+                minimumFontScale={0.5}
+              >
+                {card.back}
+              </Text>
             </View>
             <Text style={styles.cardHintInverse}>Rate your recall</Text>
           </Animated.View>
@@ -305,6 +348,7 @@ const styles = StyleSheet.create({
   },
   cardCenter: {
     flex: 1,
+    width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -388,54 +432,5 @@ const styles = StyleSheet.create({
   },
   gradeLabelOnAccent: {
     color: colors.textOnAccent,
-  },
-  summaryWrap: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    gap: spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  summaryEyebrow: {
-    color: colors.accent,
-    fontFamily: fonts.ui.bold,
-    fontWeight: '700',
-    fontSize: 11,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  summaryHeadline: {
-    color: colors.text,
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontSize: typography.title,
-    textAlign: 'center',
-  },
-  summaryBody: {
-    color: colors.muted,
-    fontFamily: fonts.ui.regular,
-    fontSize: typography.body,
-    textAlign: 'center',
-  },
-  summaryNext: {
-    color: colors.text,
-    fontFamily: fonts.ui.regular,
-    fontSize: typography.bodySm,
-    textAlign: 'center',
-  },
-  summarySpace: {
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontStyle: 'italic',
-  },
-  errorBanner: {
-    color: colors.text,
-    backgroundColor: 'rgba(177,8,4,0.08)',
-    padding: spacing.sm,
-    borderRadius: radii.sm,
-    fontFamily: fonts.ui.medium,
-    fontSize: typography.caption,
-    textAlign: 'center',
   },
 });

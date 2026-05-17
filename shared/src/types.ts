@@ -243,3 +243,36 @@ export type CoachClientMessage =
   | { type: 'ping' }
   | { type: 'mistake'; termId: string; observation: string }
   | { type: 'hint_request'; termId: string; tier: 1 | 2 | 3 };
+
+/**
+ * `/extract` WebSocket — real-time term-extraction progress.
+ *
+ * Stages, in order:
+ *   - `preparing`   : looking up the stored notes
+ *   - `calling-model`: the LLM call is in flight (indeterminate; the slow part)
+ *   - `verifying`   : span/grounding checks, `current`/`total` populated
+ *   - `persisting`  : writing accepted terms
+ * Terminates with `done` (refreshed Space + counts) or `error` (HTTP-equivalent
+ * status so the client can branch the same way it does on the REST route).
+ */
+export type ExtractStage =
+  | 'preparing'
+  | 'calling-model'
+  | 'verifying'
+  | 'persisting';
+
+export type ExtractClientMessage =
+  | { type: 'ping' }
+  | { type: 'start'; spaceId: string };
+
+export type ExtractEvent =
+  | { type: 'hello' }
+  | { type: 'stage'; stage: ExtractStage; current?: number; total?: number }
+  | {
+      type: 'done';
+      space: Space;
+      acceptedCount: number;
+      rejectedCount: number;
+    }
+  | { type: 'error'; status: number; message: string }
+  | { type: 'pong' };

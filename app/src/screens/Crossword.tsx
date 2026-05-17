@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -6,6 +6,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type {
@@ -15,9 +16,12 @@ import type {
   SessionFinishResponse,
 } from '@pachu/shared';
 import { palette } from '@pachu/shared';
+import { getPuzzleProgress, savePuzzleProgress } from '../api/puzzles';
 import { useCoach } from '../api/ws';
 import { CoachOverlay } from '../components/CoachOverlay';
 import { ProgressBar } from '../components/ProgressBar';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PuzzleComplete } from '../components/PuzzleComplete';
 import { PuzzleShell } from '../components/PuzzleShell';
 import { SecondaryButton } from '../components/PrimaryButton';
 import { useNavigation } from '../navigation/NavigationContext';
@@ -150,6 +154,7 @@ export function CrosswordScreen() {
   const { activeSpace } = useSpaces();
   const session = useSession();
   const coach = useCoach();
+  const { width: windowWidth } = useWindowDimensions();
   const puzzle =
     activePuzzle && isCrosswordPuzzle(activePuzzle) ? activePuzzle : null;
 
@@ -157,6 +162,13 @@ export function CrosswordScreen() {
     () => (puzzle ? buildGrid(puzzle.width, puzzle.height, puzzle.entries) : null),
     [puzzle],
   );
+
+  // Scale cell size down so the grid always fits within the card's available
+  // width. cardMargin (16 * 2) + cardPadding (6 * 2) = 44px consumed by card.
+  const availableWidth = windowWidth - 44;
+  const cellSize = puzzle
+    ? Math.min(CELL, Math.floor((availableWidth - (puzzle.width - 1) * GAP) / puzzle.width))
+    : CELL;
 
   // Per-cell letter input (uppercase A–Z or empty).
   const [letters, setLetters] = useState<Record<string, string>>({});
@@ -179,6 +191,19 @@ export function CrosswordScreen() {
     return init;
   });
 
+  const [hintCooldown, setHintCooldown] = useState(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear cooldown whenever the selected cell changes. `selected` is defined
+  // above the early-return guard; `currentEntry` is not (it is derived below
+  // that guard), so we can't reference it here. Using `selected` is correct:
+  // the user picking any new cell always changes `selected`, which resets the
+  // per-word cooldown.
+  useEffect(() => {
+    setHintCooldown(false);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+  }, [selected]);
+
   const [feedback, setFeedback] = useState<string | null>(null);
   const [summary, setSummary] = useState<{
     response: SessionFinishResponse | null;
@@ -186,6 +211,58 @@ export function CrosswordScreen() {
     spaceTitle: string;
   } | null>(null);
   const [finishError, setFinishError] = useState<string | null>(null);
+  const [confirmEnd, setConfirmEnd] = useState(false);
+
+  // --- Progress persistence -------------------------------------------------
+  // Hydrate saved letters/term-states once, then persist EXPLICITLY on Submit
+  // / Reveal / Hint. (A debounced autosave got cancelled by its own cleanup on
+  // every keystroke and on unmount, so nothing survived a "back".)
+  const puzzleId = puzzle?.id;
+  const hydratedRef = useRef(false);
+  const readyRef = useRef(false);
+  useEffect(() => {
+    if (!puzzleId || hydratedRef.current) return;
+    hydratedRef.current = true;
+    void getPuzzleProgress(puzzleId)
+      .then((p) => {
+        const prog = p?.progress as
+          | { letters?: Record<string, string>; termStates?: Record<string, PerTermState> }
+          | undefined;
+        if (prog?.letters) setLetters(prog.letters);
+        if (prog?.termStates) setTermStates(prog.termStates);
+      })
+      .finally(() => {
+        readyRef.current = true;
+      });
+  }, [puzzleId]);
+
+  const persist = (
+    nextLetters: Record<string, string>,
+    nextTermStates: Record<string, PerTermState>,
+  ) => {
+    if (!puzzleId || !readyRef.current) return;
+    void savePuzzleProgress(puzzleId, {
+      letters: nextLetters,
+      termStates: nextTermStates,
+    });
+  };
+
+  // Summary must be checked BEFORE the no-puzzle guard: finishing the session
+  // clears `activePuzzle`, so without this the stats screen would be masked by
+  // the "No crossword loaded" fallback.
+  if (summary) {
+    return (
+      <PuzzleShell title="Crossword" onBack={goBack} ditherIntensity="low">
+        <PuzzleComplete
+          headline={`${summary.counts.correct} solved`}
+          detail={`${summary.counts.correct} correct · ${summary.counts.revealed} revealed · ${summary.counts.wrong} skipped`}
+          footnote={`Saved to ${summary.spaceTitle}`}
+          error={finishError}
+          onBack={goBack}
+        />
+      </PuzzleShell>
+    );
+  }
 
   if (!puzzle || puzzle.entries.length === 0 || !grid) {
     return (
@@ -219,6 +296,18 @@ export function CrosswordScreen() {
   })();
 
   const currentTermState = termStates[currentEntry.termId] ?? emptyTermState();
+
+  // Entries the user never solved or revealed get rating "Again" (wrong) at
+  // finish — warn before ending so a mis-tap doesn't tank a half-done puzzle.
+  const incompleteCount = puzzle.entries.filter((e) => {
+    const s = termStates[e.termId] ?? emptyTermState();
+    return !(s.correct || s.revealed);
+  }).length;
+
+  const handleDone = () => {
+    if (incompleteCount > 0) setConfirmEnd(true);
+    else void finishSession();
+  };
 
   const setCell = (x: number, y: number, v: string) => {
     setLetters((prev) => ({ ...prev, [`${x},${y}`]: v }));
@@ -270,17 +359,17 @@ export function CrosswordScreen() {
     }
     const guessStr = guess.join('');
     const correct = guessStr === currentEntry.term.toUpperCase();
-    setTermStates((prev) => {
-      const cur = prev[currentEntry.termId] ?? emptyTermState();
-      return {
-        ...prev,
-        [currentEntry.termId]: {
-          ...cur,
-          attempts: cur.attempts + 1,
-          correct: cur.correct || correct,
-        },
-      };
-    });
+    const cur = termStates[currentEntry.termId] ?? emptyTermState();
+    const nextTermStates: Record<string, PerTermState> = {
+      ...termStates,
+      [currentEntry.termId]: {
+        ...cur,
+        attempts: cur.attempts + 1,
+        correct: cur.correct || correct,
+      },
+    };
+    setTermStates(nextTermStates);
+    persist(letters, nextTermStates);
     setFeedback(
       correct ? 'Correct!' : `Not quite — keep trying ${currentEntry.term.length}-letter answer`,
     );
@@ -296,32 +385,36 @@ export function CrosswordScreen() {
 
   const requestHint = () => {
     const cur = termStates[currentEntry.termId] ?? emptyTermState();
-    const tier = Math.min(3, cur.hintsUsed + 1) as 1 | 2 | 3;
+    if (cur.revealed || hintCooldown) return;
+    const tier = Math.min(2, cur.hintsUsed + 1) as 1 | 2;
     coach.send({ type: 'hint_request', termId: currentEntry.termId, tier });
-    setTermStates((prev) => ({
-      ...prev,
-      [currentEntry.termId]: {
-        ...(prev[currentEntry.termId] ?? emptyTermState()),
-        hintsUsed: cur.hintsUsed + 1,
-      },
-    }));
+    const nextTermStates: Record<string, PerTermState> = {
+      ...termStates,
+      [currentEntry.termId]: { ...cur, hintsUsed: cur.hintsUsed + 1 },
+    };
+    setTermStates(nextTermStates);
+    persist(letters, nextTermStates);
+    setHintCooldown(true);
+    hintTimer.current = setTimeout(() => setHintCooldown(false), 8000);
   };
 
   const revealCurrent = () => {
+    const nextLetters: Record<string, string> = { ...letters };
     for (let i = 0; i < currentEntry.term.length; i++) {
       const x =
         currentEntry.orientation === 'across' ? currentEntry.startX + i : currentEntry.startX;
       const y =
         currentEntry.orientation === 'down' ? currentEntry.startY + i : currentEntry.startY;
-      setCell(x, y, currentEntry.term[i]!.toUpperCase());
+      nextLetters[`${x},${y}`] = currentEntry.term[i]!.toUpperCase();
     }
-    setTermStates((prev) => {
-      const cur = prev[currentEntry.termId] ?? emptyTermState();
-      return {
-        ...prev,
-        [currentEntry.termId]: { ...cur, revealed: true, correct: false },
-      };
-    });
+    setLetters(nextLetters);
+    const cur = termStates[currentEntry.termId] ?? emptyTermState();
+    const nextTermStates: Record<string, PerTermState> = {
+      ...termStates,
+      [currentEntry.termId]: { ...cur, revealed: true, correct: false },
+    };
+    setTermStates(nextTermStates);
+    persist(nextLetters, nextTermStates);
     setFeedback('Revealed');
   };
 
@@ -360,212 +453,212 @@ export function CrosswordScreen() {
     }
   };
 
-  if (summary) {
-    return (
-      <PuzzleShell title="Crossword" onBack={goBack} ditherIntensity="low">
-        <View style={[styles.summaryWrap, { paddingBottom: spacing.xl + insets.bottom }]}>
-          <Text style={styles.summaryEyebrow}>Session complete</Text>
-          <Text style={styles.summaryHeadline}>
-            {summary.counts.correct} solved
-          </Text>
-          <Text style={styles.summaryBody}>
-            {summary.counts.correct} correct · {summary.counts.revealed} revealed ·{' '}
-            {summary.counts.wrong} skipped
-          </Text>
-          <Text style={styles.summaryNext}>
-            Saved to <Text style={styles.summarySpace}>{summary.spaceTitle}</Text>
-          </Text>
-          {finishError && <Text style={styles.errorBanner}>{finishError}</Text>}
-          <SecondaryButton
-            label="Back to space"
-            onPress={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
-            full
-          />
-        </View>
-      </PuzzleShell>
-    );
-  }
-
   return (
     <PuzzleShell
       title="Crossword"
-      onBack={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
+      onBack={goBack}
       ditherIntensity="medium"
     >
-      <View style={styles.progressWrap}>
-        <ProgressBar value={filledCount} max={totalCount} />
-      </View>
+      {/* Scrollable area — grid + clue card + chip strip */}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.progressWrap}>
+          <ProgressBar value={filledCount} max={totalCount} />
+        </View>
 
-      <View style={styles.gridCard}>
-        <View
-          style={{
-            // Cell-grid pad so the inner cells aren't right against the rounded corners.
-            paddingHorizontal: 6,
-            paddingVertical: 6,
-          }}
-        >
-          {Array.from({ length: puzzle.height }).map((_, y) => (
-            <View key={`row-${y}`} style={[styles.gridRow, { marginBottom: y < puzzle.height - 1 ? GAP : 0 }]}>
-              {Array.from({ length: puzzle.width }).map((__, x) => {
-                const cell = grid.cells[y]![x];
-                if (!cell) {
+        <View style={styles.gridCard}>
+          <View style={styles.gridInner}>
+            {Array.from({ length: puzzle.height }).map((_, y) => (
+              <View key={`row-${y}`} style={[styles.gridRow, { marginBottom: y < puzzle.height - 1 ? GAP : 0 }]}>
+                {Array.from({ length: puzzle.width }).map((__, x) => {
+                  const cell = grid.cells[y]![x];
+                  if (!cell) {
+                    return (
+                      <View
+                        key={`c-${x}-${y}`}
+                        style={[
+                          styles.cellBlock,
+                          { width: cellSize, height: cellSize, marginRight: x < puzzle.width - 1 ? GAP : 0 },
+                        ]}
+                      />
+                    );
+                  }
+                  const isSel = selected?.x === x && selected?.y === y;
+                  const inWord = inCurrentWord(x, y);
+                  const value = cellLetter(x, y);
+                  const correctLetter = cell.letter;
+                  const cellCorrect = value && value.toUpperCase() === correctLetter;
                   return (
-                    <View
+                    <Pressable
                       key={`c-${x}-${y}`}
-                      style={[
-                        styles.cellBlock,
-                        { marginRight: x < puzzle.width - 1 ? GAP : 0 },
-                      ]}
-                    />
-                  );
-                }
-                const isSel = selected?.x === x && selected?.y === y;
-                const inWord = inCurrentWord(x, y);
-                const value = cellLetter(x, y);
-                const correctLetter = cell.letter;
-                const cellCorrect = value && value.toUpperCase() === correctLetter;
-                return (
-                  <Pressable
-                    key={`c-${x}-${y}`}
-                    onPress={() => {
-                      const sameCell = isSel;
-                      const dir = sameCell
-                        ? selected!.dir === 'across' && cell.down
-                          ? 'down'
+                      onPress={() => {
+                        const sameCell = isSel;
+                        const dir = sameCell
+                          ? selected!.dir === 'across' && cell.down
+                            ? 'down'
+                            : cell.across
+                              ? 'across'
+                              : 'down'
                           : cell.across
                             ? 'across'
-                            : 'down'
-                        : cell.across
-                          ? 'across'
-                          : 'down';
-                      setSelected({ x, y, dir });
-                      focusCell(x, y);
-                    }}
-                    style={[
-                      styles.cell,
-                      { marginRight: x < puzzle.width - 1 ? GAP : 0 },
-                      isSel && styles.cellSelected,
-                      !isSel && inWord && styles.cellInWord,
-                    ]}
-                  >
-                    {cell.number !== undefined && (
-                      <Text
-                        style={[
-                          styles.cellNumber,
-                          isSel ? styles.cellNumberInverse : null,
-                        ]}
-                      >
-                        {cell.number}
-                      </Text>
-                    )}
-                    <TextInput
-                      ref={(el) => {
-                        cellRefs.current.set(`${x},${y}`, el);
+                            : 'down';
+                        setSelected({ x, y, dir });
+                        focusCell(x, y);
                       }}
-                      value={value}
-                      onChangeText={(raw) => {
-                        const letter = raw.slice(-1).toUpperCase().replace(/[^A-Z]/g, '');
-                        setCell(x, y, letter);
-                        setFeedback(null);
-                        if (letter && selected) {
-                          advance(x, y, selected.dir);
-                        }
-                      }}
-                      maxLength={1}
-                      autoCapitalize="characters"
-                      autoCorrect={false}
                       style={[
-                        styles.cellInput,
-                        isSel && styles.cellInputInverse,
-                        !isSel && cellCorrect && styles.cellInputCorrect,
+                        styles.cell,
+                        { width: cellSize, height: cellSize, marginRight: x < puzzle.width - 1 ? GAP : 0 },
+                        isSel && styles.cellSelected,
+                        !isSel && inWord && styles.cellInWord,
                       ]}
-                    />
-                  </Pressable>
-                );
-              })}
-            </View>
-          ))}
+                    >
+                      {cell.number !== undefined && (
+                        <Text
+                          style={[
+                            styles.cellNumber,
+                            { fontSize: Math.max(6, cellSize * 0.22) },
+                            isSel ? styles.cellNumberInverse : null,
+                          ]}
+                        >
+                          {cell.number}
+                        </Text>
+                      )}
+                      <TextInput
+                        ref={(el) => {
+                          cellRefs.current.set(`${x},${y}`, el);
+                        }}
+                        value={value}
+                        onChangeText={(raw) => {
+                          const letter = raw.slice(-1).toUpperCase().replace(/[^A-Z]/g, '');
+                          setCell(x, y, letter);
+                          setFeedback(null);
+                          if (letter && selected) {
+                            advance(x, y, selected.dir);
+                          }
+                        }}
+                        maxLength={1}
+                        autoCapitalize="characters"
+                        autoCorrect={false}
+                        style={[
+                          styles.cellInput,
+                          { fontSize: Math.max(10, cellSize * 0.44) },
+                          isSel && styles.cellInputInverse,
+                          !isSel && cellCorrect && styles.cellInputCorrect,
+                        ]}
+                      />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
         </View>
-      </View>
 
-      <View style={styles.clueCard}>
-        <Text style={styles.clueEyebrow}>
-          {grid.numberByTermId.get(currentEntry.termId) ?? '?'}{' '}
-          {currentEntry.orientation === 'across' ? 'Across' : 'Down'}
-        </Text>
-        <Text style={styles.clueBody}>{currentEntry.clue}</Text>
-
-        <View style={styles.clueActions}>
-          <Pressable
-            onPress={requestHint}
-            disabled={(currentTermState.hintsUsed ?? 0) >= 3}
-            style={[
-              styles.clueBtn,
-              styles.clueBtnSecondary,
-              (currentTermState.hintsUsed ?? 0) >= 3 && styles.clueBtnDisabled,
-            ]}
-          >
-            <Text style={styles.clueBtnSecondaryLabel}>
-              {currentTermState.hintsUsed === 0
-                ? 'Hint'
-                : currentTermState.hintsUsed >= 3
-                  ? 'No more hints'
-                  : `Hint (${currentTermState.hintsUsed}/3)`}
-            </Text>
-          </Pressable>
-          <Pressable onPress={revealCurrent} style={[styles.clueBtn, styles.clueBtnSecondary]}>
-            <Text style={styles.clueBtnSecondaryLabel}>Reveal</Text>
-          </Pressable>
-          <Pressable onPress={submitCurrent} style={[styles.clueBtn, styles.clueBtnPrimary]}>
-            <Text style={styles.clueBtnPrimaryLabel}>Submit</Text>
-          </Pressable>
-        </View>
-        {feedback && (
-          <Text
-            style={[
-              styles.feedback,
-              currentTermState.revealed ? styles.feedbackMuted : null,
-              feedback === 'Correct!' ? styles.feedbackOk : null,
-            ]}
-          >
-            {feedback}
+        <View style={styles.clueCard}>
+          <Text style={styles.clueEyebrow}>
+            {grid.numberByTermId.get(currentEntry.termId) ?? '?'}{' '}
+            {currentEntry.orientation === 'across' ? 'Across' : 'Down'}
           </Text>
-        )}
-      </View>
+          <Text style={styles.clueBody}>{currentEntry.clue}</Text>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chipRow}
-      >
-        {grid.numbered.map(({ number, entry }) => {
-          const active =
-            entry.termId === currentEntry.termId &&
-            entry.orientation === (selected?.dir ?? 'across');
-          return (
-            <Pressable
-              key={`${number}-${entry.orientation}`}
-              onPress={() =>
-                setSelected({ x: entry.startX, y: entry.startY, dir: entry.orientation })
-              }
-              style={[styles.chip, active && styles.chipActive]}
+          {!(currentTermState.correct || currentTermState.revealed) && (
+            <View style={styles.clueActions}>
+              <Pressable
+                onPress={requestHint}
+                disabled={(currentTermState.hintsUsed ?? 0) >= 2 || hintCooldown}
+                style={[
+                  styles.clueBtn,
+                  styles.clueBtnSecondary,
+                  ((currentTermState.hintsUsed ?? 0) >= 2 || hintCooldown) && styles.clueBtnDisabled,
+                ]}
+              >
+                <Text style={styles.clueBtnSecondaryLabel}>
+                  {hintCooldown
+                    ? 'Hint…'
+                    : currentTermState.hintsUsed === 0
+                      ? 'Hint'
+                      : currentTermState.hintsUsed >= 2
+                        ? 'No more hints'
+                        : `Hint (${currentTermState.hintsUsed}/2)`}
+                </Text>
+              </Pressable>
+              <Pressable onPress={revealCurrent} style={[styles.clueBtn, styles.clueBtnSecondary]}>
+                <Text style={styles.clueBtnSecondaryLabel}>Reveal</Text>
+              </Pressable>
+              <Pressable onPress={submitCurrent} style={[styles.clueBtn, styles.clueBtnPrimary]}>
+                <Text style={styles.clueBtnPrimaryLabel}>Submit</Text>
+              </Pressable>
+            </View>
+          )}
+          {feedback && (
+            <Text
+              style={[
+                styles.feedback,
+                currentTermState.revealed ? styles.feedbackMuted : null,
+                feedback === 'Correct!' ? styles.feedbackOk : null,
+              ]}
             >
-              <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-                {number}
-                {entry.orientation === 'across' ? 'A' : 'D'}
-              </Text>
-            </Pressable>
-          );
-        })}
+              {feedback}
+            </Text>
+          )}
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipRow}
+        >
+          {grid.numbered.map(({ number, entry }) => {
+            const active =
+              entry.termId === currentEntry.termId &&
+              entry.orientation === (selected?.dir ?? 'across');
+            return (
+              <Pressable
+                key={`${number}-${entry.orientation}`}
+                onPress={() =>
+                  setSelected({ x: entry.startX, y: entry.startY, dir: entry.orientation })
+                }
+                style={[styles.chip, active && styles.chipActive]}
+              >
+                <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
+                  {number}
+                  {entry.orientation === 'across' ? 'A' : 'D'}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
       </ScrollView>
 
+      {/* Footer stays pinned at the bottom regardless of content height */}
       <View style={[styles.footer, { paddingBottom: spacing.lg + insets.bottom }]}>
-        <Pressable onPress={finishSession} style={styles.doneBtn}>
+        <Pressable onPress={handleDone} style={styles.doneBtn}>
           <Text style={styles.doneBtnLabel}>Done — finish session</Text>
         </Pressable>
       </View>
 
       <CoachOverlay termId={currentEntry.termId} maxVisible={3} />
+
+      <ConfirmDialog
+        visible={confirmEnd}
+        title="End session now?"
+        message={`${incompleteCount} ${
+          incompleteCount === 1 ? 'answer is' : 'answers are'
+        } still unsolved. Ending now marks ${
+          incompleteCount === 1 ? 'it' : 'them'
+        } wrong (rated "Again"). Continue?`}
+        confirmLabel="End session"
+        cancelLabel="Keep solving"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmEnd(false);
+          void finishSession();
+        }}
+        onCancel={() => setConfirmEnd(false)}
+      />
     </PuzzleShell>
   );
 }
@@ -590,6 +683,12 @@ const styles = StyleSheet.create({
     fontSize: typography.body,
     textAlign: 'center',
   },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: spacing.md,
+  },
   progressWrap: {
     paddingHorizontal: spacing.lg,
     paddingBottom: 12,
@@ -602,6 +701,11 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     alignItems: 'center',
     ...shadows.card,
+  },
+  gridInner: {
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    alignItems: 'flex-start',
   },
   gridRow: {
     flexDirection: 'row',
@@ -770,54 +874,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.ui.semibold,
     fontWeight: '600',
     fontSize: typography.body,
-  },
-  summaryWrap: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    gap: spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  summaryEyebrow: {
-    color: colors.accent,
-    fontFamily: fonts.ui.bold,
-    fontWeight: '700',
-    fontSize: 11,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  summaryHeadline: {
-    color: colors.text,
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontSize: typography.title,
-    textAlign: 'center',
-  },
-  summaryBody: {
-    color: colors.muted,
-    fontFamily: fonts.ui.regular,
-    fontSize: typography.body,
-    textAlign: 'center',
-  },
-  summaryNext: {
-    color: colors.text,
-    fontFamily: fonts.ui.regular,
-    fontSize: typography.bodySm,
-    textAlign: 'center',
-  },
-  summarySpace: {
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontStyle: 'italic',
-  },
-  errorBanner: {
-    color: colors.text,
-    backgroundColor: 'rgba(177,8,4,0.08)',
-    padding: spacing.sm,
-    borderRadius: radii.sm,
-    fontFamily: fonts.ui.medium,
-    fontSize: typography.caption,
-    textAlign: 'center',
   },
 });

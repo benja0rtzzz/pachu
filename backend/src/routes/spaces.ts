@@ -10,14 +10,11 @@
 import { Router } from 'express';
 import type { ExtractTermsResponse, Space } from '@pachu/shared';
 import type { LlmAdapter } from '../llm/adapter.js';
-import { extractTerms } from '../llm/prompts/extractTerms.js';
+import { runSpaceExtraction } from '../llm/pipeline/extractSpace.js';
 import { computeSpaceSummary } from '../memory/spaceSummary.js';
 import {
-  countTermsByNotesFile,
   deleteNotesFile,
   getNotesFile,
-  getNotesFileWithText,
-  insertTerms,
   listNotesFiles,
   updateNotesFileTitle,
 } from '../store/index.js';
@@ -31,8 +28,8 @@ function toSpace(meta: {
   return { ...meta, summary: computeSpaceSummary(meta.id, now) };
 }
 
-/** Soft target for the extractor. Matches the default inside `extractTerms`. */
-const EXTRACT_MAX_TERMS = 20;
+/** Soft target handed to the LLM prompt; the verifier may still drop some. */
+const EXTRACT_MAX_TERMS = 34;
 
 export function spacesRouter(opts: { llm: LlmAdapter }): Router {
   const r = Router();
@@ -118,53 +115,23 @@ export function spacesRouter(opts: { llm: LlmAdapter }): Router {
       return;
     }
 
-    const note = getNotesFileWithText(id);
-    if (!note) {
-      res.status(404).json({ error: 'not found' });
+    const result = await runSpaceExtraction({
+      spaceId: id,
+      llm: opts.llm,
+      maxTerms: EXTRACT_MAX_TERMS,
+    });
+
+    if (!result.ok) {
+      res
+        .status(result.status)
+        .json({ error: result.error, rejectedCount: result.rejectedCount });
       return;
     }
 
-    if (countTermsByNotesFile(id) > 0) {
-      res.status(409).json({
-        error: 'space already has extracted terms; delete the space and re-ingest to re-extract',
-      });
-      return;
-    }
-
-    let accepted: Awaited<ReturnType<typeof extractTerms>>['accepted'];
-    let rejectedCount: number;
-    try {
-      const result = await extractTerms({
-        llm: opts.llm,
-        notes: note.rawText,
-        maxTerms: EXTRACT_MAX_TERMS,
-      });
-      accepted = result.accepted;
-      rejectedCount = result.rejected.length;
-    } catch (err) {
-      // Most often: LLM unreachable (Ollama down) or HTTP timeout. Surface as 502 so the
-      // app can show "backend lost the LLM" instead of "your notes are bad".
-      const message = err instanceof Error ? err.message : 'extractor failure';
-      res.status(502).json({ error: message });
-      return;
-    }
-
-    if (accepted.length === 0) {
-      res.status(422).json({
-        error:
-          'not enough information in notes to extract terms — the LLM produced no candidates that passed verification. Try richer or longer notes.',
-        rejectedCount,
-      });
-      return;
-    }
-
-    insertTerms(id, accepted);
-
-    const space = toSpace(note);
     const body: ExtractTermsResponse = {
-      space,
-      acceptedCount: accepted.length,
-      rejectedCount,
+      space: result.space,
+      acceptedCount: result.acceptedCount,
+      rejectedCount: result.rejectedCount,
     };
     res.json(body);
   });
