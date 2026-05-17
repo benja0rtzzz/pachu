@@ -50,6 +50,22 @@ export function getNotesFileWithText(id: string): NotesFileWithText | null {
   };
 }
 
+export function getNotesFile(id: string): NotesFile | null {
+  const db = getDatabase();
+  const row = db
+    .query('SELECT id, title, byte_length, created_at FROM notes_files WHERE id = ?')
+    .get(id) as
+    | { id: string; title: string; byte_length: number; created_at: string }
+    | null;
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    byteLength: row.byte_length,
+    createdAt: row.created_at,
+  };
+}
+
 export function listNotesFiles(): NotesFile[] {
   const db = getDatabase();
   const rows = db
@@ -67,4 +83,21 @@ export function listNotesFiles(): NotesFile[] {
     byteLength: row.byte_length,
     createdAt: row.created_at,
   }));
+}
+
+/** Rename a notes file (i.e. a `Space`). Returns true iff a row was updated. */
+export function updateNotesFileTitle(id: string, title: string): boolean {
+  const db = getDatabase();
+  const res = db.run('UPDATE notes_files SET title = ? WHERE id = ?', [title, id]);
+  return Number(res.changes ?? 0) > 0;
+}
+
+/**
+ * Delete a notes file (i.e. a `Space`). `terms`, `sessions`, and `review_events` cascade
+ * automatically via the FK clauses in schema.sql. Returns true iff a row was deleted.
+ */
+export function deleteNotesFile(id: string): boolean {
+  const db = getDatabase();
+  const res = db.run('DELETE FROM notes_files WHERE id = ?', [id]);
+  return Number(res.changes ?? 0) > 0;
 }

@@ -38,4 +38,5 @@ Backend listens on `http://localhost:4000`. The Expo app reads `EXPO_PUBLIC_API_
 
 - **Start here**: [`AGENTS.md`](AGENTS.md) — team coordination, conventions, live progress board.
 - **Full architecture**: [`docs/PLAN.md`](docs/PLAN.md) — diagrams, anti-hallucination contract, demo script.
+- **Backend API**: [`docs/API.md`](docs/API.md) — HTTP + WS surface (what's actually wired, with request/response shapes).
 - **GitHub**: https://github.com/benja0rtzzz/pachu

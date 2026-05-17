@@ -106,11 +106,13 @@ something's wrong before you write any code.
 
 ### Person A — Engine / Backend
 - [x] `backend/src/store/` — `bun:sqlite` schema + repos (`notes`, `terms` rows include serialized `ts-fsrs` card JSON; reviews, sessions)
-- [ ] `backend/src/memory/fsrs.ts` — wrap `ts-fsrs`, expose `review`, `due`, `card` helpers
+- [x] `backend/src/memory/fsrs.ts` — wraps `ts-fsrs`; `getCardForTerm` / `reviewTerm` / `isDue` / `getStabilityDays`, JSON persisted on `terms`
 - [ ] `backend/src/memory/termPicker.ts` — pick N due/weak/new terms for a session
 - [ ] `backend/src/memory/stabilityRouter.ts` — per-term `anchored | generated` decision
 - [ ] `backend/src/memory/ratingMapper.ts` — puzzle event → FSRS rating 1..4
-- [ ] `backend/src/routes/notes.ts` — `POST /notes/ingest` (store raw, no LLM yet)
+- [x] `backend/src/routes/notes.ts` — `POST /notes/ingest` stores raw text only (no LLM); `GET /notes/:id` (internal)
+- [x] `backend/src/memory/spaceSummary.ts` — computes `SpaceSummary` (termCount, dueCount, newCount, stableCount, dueToday, playedTodayKinds, streakDays)
+- [x] `backend/src/routes/spaces.ts` — `GET /spaces`, `GET /spaces/:id`, `PATCH /spaces/:id`, `DELETE /spaces/:id` (cascade via FK)
 - [ ] `backend/src/routes/puzzles.ts` — `POST /puzzles/generate`, `POST /puzzles/:id/finish`
 - [ ] `backend/src/engines/crossword.ts` — wrap `crossword-layout-generator`
 - [ ] `backend/src/engines/cloze/` — sentence splitter, anchored, generated, verifier
@@ -157,6 +159,23 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-16 — Spaces paradigm adopted; `Space.id === notes_files.id`.**
+  Driven by [`docs/SCREENS.md`](docs/SCREENS.md). The DB row is still
+  `notes_files`; there is no separate `spaces` table. A `Space` is `NotesFile`
+  metadata + a computed `SpaceSummary` (term counts, due counts, FSRS-derived
+  stable count, today-line, streak). Summaries are computed on every read —
+  staleness costs more than the microseconds we'd save by caching. Server-local
+  time is used for the daily/streak fields; revisit when remote access lands.
+- **2026-05-16 — Wire-contract refresh for the spaces paradigm.**
+  `POST /notes/ingest` body is now `IngestRequest { title, content }` (was
+  `{ title, rawText }`); response is `IngestResponse { space }` (was the raw
+  `NotesFile`). `Hint` promoted out of `CoachEvent.hint` so each tier can be
+  styled in the overlay. `spaceId` added to all three puzzle variants.
+  `previousMode?` added to `ClozeItem` for the "Regenerated for you" badge.
+  `MASK_TOKEN` constant added to `shared` so the prompt, the engine, and the
+  screen all agree on the exact string. New `/spaces` CRUD (`GET`, `GET /:id`,
+  `PATCH /:id`, `DELETE /:id`); the old `GET /notes` listing is superseded and
+  removed. CORS preflight widened to `PATCH, DELETE`.
 - **2026-05-16 — Design tokens live in `shared/src/design/palette.ts`.** Two-tier
   system: `@pachu/shared` exports raw pigment tokens (rust, ember, amber, mauve,
   stone, plum, plus derived warm-dark shades void/ink/shadow/wine/mulberry/bone,
@@ -164,6 +183,18 @@ something's wrong before you write any code.
   semantic-role mapper that imports `palette` — no hex codes in app code. Add new
   colors to the palette, not inline. Backend can consume the same palette for
   future styled outputs (status reports, PDF exports).
+- **2026-05-16 — `memory/fsrs.ts` is the only owner of `terms.fsrs_card_json`.**
+  Nothing else in the codebase parses or constructs that blob. Serialization is plain
+  `JSON.stringify(card)` (Date#toJSON gives ISO-8601), deserialization just revives `due`
+  and `last_review`. This survives a future `ts-fsrs` minor that adds a numeric field
+  without us editing the wrapper. `getCardForTerm` is read-only: a fresh `createEmptyCard`
+  is returned for unreviewed terms but NOT written back, so the term picker can scan all
+  terms cheaply without dirtying the store.
+- **2026-05-16 — `POST /notes/ingest` is LLM-free.** It stores `{title, rawText}` and
+  returns a `NotesFile` (no body). Extraction will be a separate call once Person B's
+  `extractTerms` is wired through the orchestrator. Decoupling ingest from extraction
+  means the app can ship the import screen and the engine can read notes for puzzle
+  generation even when Ollama is down.
 - **2026-05-16 — Prompt revamp + corpus expansion.** All four LLM prompts (extract,
   cloze, clue, coach) now include contrastive good/bad examples inline. Small models
   like `gemma4:e2b` follow contrastive demonstrations more reliably than abstract rules.
@@ -223,6 +254,7 @@ something's wrong before you write any code.
 ## Quick links
 
 - Architecture & rationale: [`docs/PLAN.md`](docs/PLAN.md)
+- Backend API surface (wire shapes): [`docs/API.md`](docs/API.md)
 - GitHub: https://github.com/benja0rtzzz/pachu
 - Local LLM endpoint: `http://localhost:11434/api/chat` (Ollama)
 - Backend: `http://localhost:4000`
