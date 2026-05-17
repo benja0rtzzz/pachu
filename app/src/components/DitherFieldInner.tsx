@@ -1,15 +1,26 @@
+import { useState } from 'react';
 import { StyleSheet, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
 import {
   Canvas,
+  ColorMatrix,
+  Group,
+  Image as SkiaImage,
+  Mask,
   Picture,
   Skia,
   createPicture,
+  useImage,
 } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
   useFrameCallback,
   useSharedValue,
 } from 'react-native-reanimated';
+
+// At 60fps each `useDerivedValue` recalculates the entire dot grid every
+// frame. Capping ticks at ~30fps halves GPU work with no perceptible change
+// to the ambient animation (it moves at < 0.3 rad/s).
+const TARGET_FRAME_MS = 1000 / 30;
 
 // IMPORTANT: this file must only be imported via the dynamic `lazy()` in
 // `./DitherField.tsx`, after `ensureSkiaReady()` resolves. Skia's web build
@@ -20,7 +31,7 @@ import {
 // gate lives in `DitherField.tsx`; never import this file directly.
 
 type Intensity = 'hero' | 'medium' | 'low';
-type Gradient = 'none' | 'top' | 'bottom' | 'radial';
+type Gradient = 'none' | 'top' | 'bottom' | 'radial' | 'corner';
 
 export interface DitherFieldProps {
   intensity?: Intensity;
@@ -29,8 +40,20 @@ export interface DitherFieldProps {
   gridSize?: number;
   color?: string;
   gradient?: Gradient;
+  /** Clip the dot field to the app logo (bird) silhouette. */
+  logoMask?: boolean;
   style?: ViewStyle;
 }
+
+// Invert color matrix: the logo png is a dark bird on a white field, but a
+// luminance mask keeps the *bright* areas. Inverting flips it so the bird
+// becomes the visible region and the white background is masked out.
+const INVERT_MATRIX = [
+  -1, 0, 0, 0, 1,
+  0, -1, 0, 0, 1,
+  0, 0, -1, 0, 1,
+  0, 0, 0, 1, 0,
+];
 
 const CONFIG: Record<
   Intensity,
@@ -45,18 +68,24 @@ export default function DitherFieldInner({
   intensity = 'medium',
   speed = 1,
   pulse = true,
-  gridSize = 12,
+  gridSize = 18,
   color = '#0068ff',
   gradient = 'none',
+  logoMask = false,
   style,
 }: DitherFieldProps) {
   const cfg = CONFIG[intensity];
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const logo = useImage(require('../../assets/logo.png'));
   const t = useSharedValue(0);
   const w = useSharedValue(1);
   const h = useSharedValue(1);
+  const lastTickTime = useSharedValue(0);
 
   useFrameCallback((info) => {
     'worklet';
+    if (info.timestamp - lastTickTime.value < TARGET_FRAME_MS) return;
+    lastTickTime.value = info.timestamp;
     const dtMs = info.timeSincePreviousFrame ?? 16;
     t.value += (dtMs / 1000) * speed;
   });
@@ -107,6 +136,16 @@ export default function DitherFieldInner({
             const d =
               Math.sqrt(dx * dx + dy * dy) / (Math.max(W, H) * 0.55);
             density *= Math.max(0, 1 - d * 0.9);
+          } else if (gradient === 'corner') {
+            // Circle "origin" at the bottom-right corner: brightest there,
+            // fading out toward the top-left. Tighter spread (1.45) plus a
+            // squared falloff so the diffusion from the dense core out to
+            // nothing is stronger and reads smoother (less rough banding).
+            const dx = px - W;
+            const dy = py - H;
+            const d = Math.sqrt(dx * dx + dy * dy) / Math.hypot(W, H);
+            const f = Math.max(0, 1 - d * 1.45);
+            density *= f * f;
           }
 
           const r = Math.max(0, Math.min(maxR, density * maxR * 1.25));
@@ -117,10 +156,25 @@ export default function DitherFieldInner({
     });
   });
 
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
   const onLayout = (e: LayoutChangeEvent) => {
-    w.value = e.nativeEvent.layout.width;
-    h.value = e.nativeEvent.layout.height;
+    const { width, height } = e.nativeEvent.layout;
+    w.value = width;
+    h.value = height;
+    setSize((prev) =>
+      prev.w === width && prev.h === height ? prev : { w: width, h: height },
+    );
   };
+
+  // Bird anchored to the top-right, oversized and pushed right so only ~the
+  // right half shows in the corner. Tuned by eye — adjust the multipliers if
+  // the crop needs nudging.
+  const span = Math.max(size.w, size.h) * 1.15;
+  const imgX = size.w - span * 0.66;
+  const imgY = -span * 0.06;
+
+  const useLogo = logoMask && logo != null && size.w > 0;
 
   return (
     <View
@@ -129,7 +183,29 @@ export default function DitherFieldInner({
       pointerEvents="none"
     >
       <Canvas style={styles.fill}>
-        <Picture picture={picture} />
+        {useLogo ? (
+          <Mask
+            mode="luminance"
+            mask={
+              <Group>
+                <SkiaImage
+                  image={logo}
+                  x={imgX}
+                  y={imgY}
+                  width={span}
+                  height={span}
+                  fit="contain"
+                >
+                  <ColorMatrix matrix={INVERT_MATRIX} />
+                </SkiaImage>
+              </Group>
+            }
+          >
+            <Picture picture={picture} />
+          </Mask>
+        ) : (
+          <Picture picture={picture} />
+        )}
       </Canvas>
     </View>
   );

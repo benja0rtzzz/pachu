@@ -236,7 +236,10 @@ export function PuzzlePickerScreen({ spaceId }: Props) {
         <View style={styles.tilesWrap}>
           {MODES.map((m) => {
             const done = space.summary.playedTodayKinds.includes(m.kind);
-            const disabled = termCount === 0 || loadingKind !== null;
+            // Finishing a puzzle ends its session, which lands in
+            // `playedTodayKinds` (server local day) and clears itself
+            // tomorrow — so "done today" needs no schema change.
+            const disabled = termCount === 0 || loadingKind !== null || done;
             const isLoading = loadingKind === m.kind;
             return (
               <Pressable
@@ -250,7 +253,7 @@ export function PuzzlePickerScreen({ spaceId }: Props) {
                   <View style={StyleSheet.absoluteFill}>
                     <DitherField
                       intensity="hero"
-                      gridSize={8}
+                      gridSize={14}
                       gradient="radial"
                       color={colors.accent}
                     />
@@ -266,7 +269,7 @@ export function PuzzlePickerScreen({ spaceId }: Props) {
                       {isLoading
                         ? 'Loading…'
                         : done
-                          ? 'done today'
+                          ? 'Come back tomorrow'
                           : termCount === 0
                             ? '—'
                             : 'Open →'}

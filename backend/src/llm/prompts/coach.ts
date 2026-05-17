@@ -10,12 +10,11 @@ export interface CoachHintInput {
 }
 
 export interface CoachHints {
-  /** Tier 1 — gentle nudge. LLM-generated, register mimicked from styleAnchor. */
+  /** Tier 1 — structural pattern. Computed deterministically from the term itself. */
   tier1: string;
-  /** Tier 2 — structural pattern. Computed deterministically from the term itself. */
+  /** Tier 2 — contextual nudge. LLM-generated, register mimicked from styleAnchor;
+   *  references something else from the note without revealing the term. */
   tier2: string;
-  /** Tier 3 — definition reveal. Returned verbatim from the verified term. */
-  tier3: string;
 }
 
 /**
@@ -80,9 +79,12 @@ function cleanNudge(raw: string, term: string): string {
 }
 
 /**
- * Build a tiered hint package for a stuck learner.
- * tier1 is LLM-generated and register-mimicked; tier2 is deterministic; tier3 is the
- * verified definition. Callers escalate tiers in response to repeated `hint_request` events.
+ * Build a two-tier hint package for a stuck learner.
+ * tier1 is the deterministic structural pattern (no LLM, can't leak the term);
+ * tier2 is an LLM-generated, register-mimicked nudge that references other
+ * context from the note. There is no definition-reveal tier — "Reveal" is the
+ * escape hatch the puzzle screens own. Callers escalate tiers in response to
+ * repeated `hint_request` events.
  */
 export async function generateCoachHints(opts: CoachHintInput): Promise<CoachHints> {
   const prompt = buildNudgePrompt(opts.term, opts.definition, opts.styleAnchor, opts.observation);
@@ -100,8 +102,7 @@ export async function generateCoachHints(opts: CoachHintInput): Promise<CoachHin
   );
 
   return {
-    tier1: cleanNudge(raw, opts.term),
-    tier2: computeStructuralHint(opts.term),
-    tier3: opts.definition,
+    tier1: computeStructuralHint(opts.term),
+    tier2: cleanNudge(raw, opts.term),
   };
 }

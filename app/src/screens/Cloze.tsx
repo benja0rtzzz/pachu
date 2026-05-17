@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -13,13 +13,143 @@ import { MASK_TOKEN, palette } from '@pachu/shared';
 import { useCoach } from '../api/ws';
 import { CoachOverlay } from '../components/CoachOverlay';
 import { ProgressBar } from '../components/ProgressBar';
+import { PuzzleComplete } from '../components/PuzzleComplete';
 import { PuzzleShell } from '../components/PuzzleShell';
 import { SecondaryButton } from '../components/PrimaryButton';
+import { getPuzzleProgress, savePuzzleProgress } from '../api/puzzles';
 import { useNavigation } from '../navigation/NavigationContext';
 import { isClozePuzzle, useSession, useSpaces } from '../state/session';
 import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
 
 const MAX_ATTEMPTS_BEFORE_FORCE_REVEAL = 3;
+const HINT_COOLDOWN_MS = 8000;
+
+/**
+ * Blank out every occurrence of the answer in the source snippet so the
+ * "Source" footer can't spoil the cloze. Case-insensitive; non-ASCII answers
+ * fall back to a plain global replace (word boundaries don't help for CJK).
+ */
+function redactAnswer(text: string, answer: string): string {
+  const a = answer.trim();
+  if (!a) return text;
+  const blank = '█'.repeat(Math.max(3, a.length));
+  if (/[^\x00-\x7F]/.test(a)) {
+    return text.split(a).join(blank);
+  }
+  const esc = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`\\b${esc}\\b`, 'gi'), blank);
+}
+
+const CELL_W = 19;
+const CELL_H = 30;
+const SPACE_W = 9;
+
+type GridTok =
+  | { kind: 'word'; chars: string[] }
+  | { kind: 'space' }
+  | { kind: 'blank' };
+
+/**
+ * Duolingo-style character grid: every glyph of the sentence — not just the
+ * answer — sits in a fixed-size cell, so the text wraps predictably per word
+ * and the blank lines up with the rest. The blank is N input cells backed by
+ * a single transparent TextInput so typing/caret stays native.
+ */
+function ClozeCharGrid({
+  sentence,
+  answerLen,
+  draft,
+  editable,
+  onChange,
+  tone,
+}: {
+  sentence: string;
+  answerLen: number;
+  draft: string;
+  editable: boolean;
+  onChange: (v: string) => void;
+  tone: 'idle' | 'correct' | 'wrong';
+}) {
+  const inputRef = useRef<TextInput>(null);
+  const len = Math.max(answerLen, 1);
+
+  const tokens = useMemo<GridTok[]>(() => {
+    const parts = sentence.split(MASK_TOKEN);
+    const before = parts[0] ?? '';
+    const after = parts.slice(1).join(' ');
+    const out: GridTok[] = [];
+    const pushText = (txt: string) => {
+      for (const seg of txt.split(/(\s+)/)) {
+        if (seg === '') continue;
+        if (/^\s+$/.test(seg)) {
+          for (let i = 0; i < seg.length; i++) out.push({ kind: 'space' });
+        } else {
+          out.push({ kind: 'word', chars: Array.from(seg) });
+        }
+      }
+    };
+    pushText(before);
+    out.push({ kind: 'blank' });
+    pushText(after);
+    return out;
+  }, [sentence]);
+
+  const focusBlank = () => {
+    if (editable) inputRef.current?.focus();
+  };
+
+  return (
+    <View style={styles.grid}>
+      {tokens.map((tok, ti) => {
+        if (tok.kind === 'space') {
+          return <View key={`s-${ti}`} style={styles.gridSpace} />;
+        }
+        if (tok.kind === 'blank') {
+          return (
+            <Pressable key={`b-${ti}`} onPress={focusBlank} style={styles.gridWord}>
+              {Array.from({ length: len }).map((_, i) => (
+                <View
+                  key={`bc-${i}`}
+                  style={[
+                    styles.gridCell,
+                    styles.blankCell,
+                    tone === 'correct' && styles.blankCellCorrect,
+                    tone === 'wrong' && styles.blankCellWrong,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.gridChar,
+                      tone === 'correct' && styles.gridCharCorrect,
+                    ]}
+                  >
+                    {draft[i] ?? ''}
+                  </Text>
+                </View>
+              ))}
+              <TextInput
+                ref={inputRef}
+                value={draft}
+                onChangeText={onChange}
+                editable={editable}
+                maxLength={len}
+                autoCapitalize="none"
+                autoCorrect={false}
+                caretHidden
+                style={styles.gridHiddenInput}
+              />
+            </Pressable>
+          );
+        }
+        return (
+          <Text key={`w-${ti}`} style={styles.gridWordText}>
+            {tok.chars.join('')}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
 
 interface PerItemState {
   startedAt: number;
@@ -37,6 +167,12 @@ function emptyItemState(): PerItemState {
     correct: false,
     revealed: false,
   };
+}
+
+interface ClozeProgress {
+  index: number;
+  itemStates: Record<string, PerItemState>;
+  drafts: Record<string, string>;
 }
 
 /**
@@ -66,6 +202,8 @@ export function ClozeScreen() {
   const [draft, setDraft] = useState('');
   const [state, setState] = useState<PerItemState>(emptyItemState());
   const [submitted, setSubmitted] = useState<'correct' | 'wrong' | null>(null);
+  const [hintCooldown, setHintCooldown] = useState(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const itemStatesRef = useRef<Map<string, PerItemState>>(new Map());
   const [finishError, setFinishError] = useState<string | null>(null);
   const [summary, setSummary] = useState<{
@@ -77,11 +215,114 @@ export function ClozeScreen() {
 
   const item: ClozeItem | undefined = puzzle?.items[index];
 
+  // When resuming, the [index] effect must NOT wipe the restored item — this
+  // ref carries the saved state/draft for the landed index for one run.
+  const resumeRef = useRef<{ state: PerItemState; draft: string } | null>(null);
+
   useEffect(() => {
+    if (resumeRef.current) {
+      const r = resumeRef.current;
+      resumeRef.current = null;
+      setState(r.state);
+      setDraft(r.draft);
+      setSubmitted(
+        r.state.correct ? 'correct' : r.state.revealed ? 'wrong' : null,
+      );
+      return;
+    }
     setState(emptyItemState());
     setDraft('');
     setSubmitted(null);
+    setHintCooldown(false);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
   }, [index]);
+
+  useEffect(() => () => {
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+  }, []);
+
+  // --- Progress persistence ------------------------------------------------
+  const puzzleId = puzzle?.id;
+  const itemCount = puzzle?.items.length ?? 0;
+  const hydratedRef = useRef(false);
+  // Only true once the GET resolves — guards persist() so a user action in
+  // the fetch window can't overwrite saved progress with empty state.
+  const readyRef = useRef(false);
+
+  useEffect(() => {
+    if (!puzzleId || hydratedRef.current) return;
+    hydratedRef.current = true;
+    void getPuzzleProgress(puzzleId)
+      .then((p) => {
+        const prog = p?.progress as ClozeProgress | undefined;
+        if (!prog || !puzzle) return;
+        if (prog.itemStates) {
+          for (const [k, v] of Object.entries(prog.itemStates)) {
+            itemStatesRef.current.set(k, v);
+          }
+        }
+        const ri =
+          typeof prog.index === 'number'
+            ? Math.min(Math.max(0, prog.index), Math.max(0, itemCount - 1))
+            : 0;
+        const termId = puzzle.items[ri]?.termId;
+        if (!termId) return;
+        const savedState = itemStatesRef.current.get(termId) ?? emptyItemState();
+        const savedDraft = prog.drafts?.[termId] ?? '';
+        if (ri > 0) {
+          // [index] effect re-runs on the index change and applies resumeRef.
+          resumeRef.current = { state: savedState, draft: savedDraft };
+          setIndex(ri);
+        } else {
+          // Already on index 0 — the [index] effect won't fire, restore inline.
+          setState(savedState);
+          setDraft(savedDraft);
+          setSubmitted(
+            savedState.correct ? 'correct' : savedState.revealed ? 'wrong' : null,
+          );
+        }
+      })
+      .finally(() => {
+        readyRef.current = true;
+      });
+  }, [puzzleId, itemCount, puzzle]);
+
+  // Explicit, immediate persist. The earlier debounced autosave was cancelled
+  // by its own cleanup whenever `index` advanced or the screen unmounted, so
+  // little/nothing survived a "back". We snapshot synchronously instead.
+  const persist = (over: {
+    index?: number;
+    curState?: PerItemState;
+    curDraft?: string;
+  }) => {
+    if (!puzzleId || !readyRef.current || !item) return;
+    const curState = over.curState ?? state;
+    const itemStates: Record<string, PerItemState> = {};
+    itemStatesRef.current.forEach((v, k) => {
+      itemStates[k] = v;
+    });
+    itemStates[item.termId] = curState;
+    void savePuzzleProgress(puzzleId, {
+      index: over.index ?? index,
+      itemStates,
+      drafts: { [item.termId]: over.curDraft ?? draft },
+    } satisfies ClozeProgress);
+  };
+
+  // Summary first: finishing the session clears `activePuzzle`, which would
+  // otherwise fall through to the "No cloze items loaded" guard below.
+  if (summary) {
+    return (
+      <PuzzleShell title="Cloze" onBack={goBack} ditherIntensity="low">
+        <PuzzleComplete
+          headline={`${summary.correctCount} / ${summary.total} correct`}
+          footnote={`Saved to ${summary.spaceTitle}`}
+          error={finishError}
+          onBack={goBack}
+        />
+      </PuzzleShell>
+    );
+  }
 
   if (!puzzle || puzzle.items.length === 0) {
     return (
@@ -107,8 +348,6 @@ export function ClozeScreen() {
 
   const total = puzzle.items.length;
   const isLast = index >= total - 1;
-  const sentenceParts = item.sentence.split(MASK_TOKEN);
-  const blankWidth = Math.max(80, item.answer.length * 13);
 
   const submit = () => {
     const guess = draft.trim();
@@ -132,23 +371,39 @@ export function ClozeScreen() {
     }
     if (!correct && next.attempts >= MAX_ATTEMPTS_BEFORE_FORCE_REVEAL) {
       // Force reveal so the user always advances.
-      setState({ ...next, revealed: true });
+      const forced = { ...next, revealed: true };
+      setState(forced);
       setDraft(item.answer);
+      itemStatesRef.current.set(item.termId, forced);
+      persist({ curState: forced, curDraft: item.answer });
+      return;
     }
+    itemStatesRef.current.set(item.termId, next);
+    persist({ curState: next });
   };
 
-  // Tier escalation: each tap moves up one tier (1 → 2 → 3) until reveal.
-  // `hintsUsed` increments locally so the rating mapper can penalize.
+  // Tier escalation: first tap → pattern, second → LLM nudge. A short
+  // cooldown between requests stops a double-tap from burning both tiers at
+  // once (matches the Crossword behaviour).
   const requestHint = () => {
-    const tier = Math.min(3, state.hintsUsed + 1) as 1 | 2 | 3;
+    if (state.hintsUsed >= 2 || hintCooldown) return;
+    const tier = Math.min(2, state.hintsUsed + 1) as 1 | 2;
     coach.send({ type: 'hint_request', termId: item.termId, tier });
-    setState({ ...state, hintsUsed: state.hintsUsed + 1 });
+    const hinted = { ...state, hintsUsed: state.hintsUsed + 1 };
+    setState(hinted);
+    itemStatesRef.current.set(item.termId, hinted);
+    persist({ curState: hinted });
+    setHintCooldown(true);
+    hintTimer.current = setTimeout(() => setHintCooldown(false), HINT_COOLDOWN_MS);
   };
 
   const reveal = () => {
-    setState({ ...state, revealed: true, correct: false });
+    const revealed = { ...state, revealed: true, correct: false };
+    setState(revealed);
     setDraft(item.answer);
     setSubmitted('wrong');
+    itemStatesRef.current.set(item.termId, revealed);
+    persist({ curState: revealed, curDraft: item.answer });
   };
 
   const finishSession = async () => {
@@ -193,30 +448,9 @@ export function ClozeScreen() {
       await finishSession();
       return;
     }
+    persist({ index: index + 1, curState: state });
     setIndex((i) => i + 1);
   };
-
-  if (summary) {
-    return (
-      <PuzzleShell title="Cloze" onBack={goBack} ditherIntensity="low">
-        <View style={[styles.summaryWrap, { paddingBottom: spacing.xl + insets.bottom }]}>
-          <Text style={styles.summaryEyebrow}>Session complete</Text>
-          <Text style={styles.summaryHeadline}>
-            {summary.correctCount} / {summary.total} correct
-          </Text>
-          <Text style={styles.summaryNext}>
-            Saved to <Text style={styles.summarySpace}>{summary.spaceTitle}</Text>
-          </Text>
-          {finishError && <Text style={styles.errorBanner}>{finishError}</Text>}
-          <SecondaryButton
-            label="Back to space"
-            onPress={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
-            full
-          />
-        </View>
-      </PuzzleShell>
-    );
-  }
 
   const showWrongCue = submitted === 'wrong' && !state.revealed;
   const showCorrectCue = submitted === 'correct' || state.revealed;
@@ -224,7 +458,7 @@ export function ClozeScreen() {
   return (
     <PuzzleShell
       title="Cloze"
-      onBack={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
+      onBack={goBack}
       ditherIntensity="medium"
     >
       <View style={styles.progressWrap}>
@@ -260,40 +494,23 @@ export function ClozeScreen() {
             </View>
           </View>
 
-          <View style={styles.sentence}>
-            {sentenceParts.map((piece, i) => (
-              <View key={`piece-${i}`} style={styles.sentenceRow}>
-                {piece.length > 0 && <Text style={styles.sentenceText}>{piece}</Text>}
-                {i < sentenceParts.length - 1 && (
-                  <View style={[styles.blank, { width: blankWidth }]}>
-                    <TextInput
-                      value={draft}
-                      onChangeText={(v) => {
-                        if (state.revealed) return;
-                        setDraft(v);
-                        if (submitted !== null) setSubmitted(null);
-                      }}
-                      editable={!state.revealed}
-                      placeholder={item.answer.length > 0 ? `${item.answer.length} letters` : 'answer'}
-                      placeholderTextColor={colors.subtle}
-                      style={[
-                        styles.blankInput,
-                        showCorrectCue && styles.blankInputCorrect,
-                        showWrongCue && styles.blankInputWrong,
-                      ]}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                  </View>
-                )}
-              </View>
-            ))}
-          </View>
+          <ClozeCharGrid
+            sentence={item.sentence}
+            answerLen={item.answer.length}
+            draft={draft}
+            editable={!state.revealed}
+            onChange={(v) => {
+              if (state.revealed) return;
+              setDraft(v);
+              if (submitted !== null) setSubmitted(null);
+            }}
+            tone={showCorrectCue ? 'correct' : showWrongCue ? 'wrong' : 'idle'}
+          />
 
           <View style={styles.sourceFooter}>
             <Text style={styles.sourceLabel}>Source</Text>
             <Text style={styles.sourceText} numberOfLines={3}>
-              {item.sourceChunk}
+              {redactAnswer(item.sourceChunk, item.answer)}
             </Text>
           </View>
         </View>
@@ -319,19 +536,21 @@ export function ClozeScreen() {
           <>
             <Pressable
               onPress={requestHint}
-              disabled={state.hintsUsed >= 3}
+              disabled={state.hintsUsed >= 2 || hintCooldown}
               style={[
                 styles.actionBtn,
                 styles.actionSecondary,
-                state.hintsUsed >= 3 && styles.actionDisabled,
+                (state.hintsUsed >= 2 || hintCooldown) && styles.actionDisabled,
               ]}
             >
               <Text style={styles.actionSecondaryLabel}>
-                {state.hintsUsed === 0
-                  ? 'Hint'
-                  : state.hintsUsed >= 3
-                    ? 'No more hints'
-                    : `Hint (${state.hintsUsed}/3)`}
+                {hintCooldown
+                  ? 'Hint…'
+                  : state.hintsUsed === 0
+                    ? 'Hint'
+                    : state.hintsUsed >= 2
+                      ? 'No more hints'
+                      : `Hint (${state.hintsUsed}/2)`}
               </Text>
             </Pressable>
             <Pressable onPress={reveal} style={[styles.actionBtn, styles.actionSecondary]}>
@@ -438,49 +657,67 @@ const styles = StyleSheet.create({
   modeGeneratedLabel: {
     color: palette.sage,
   },
-  sentence: {
+  grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    alignItems: 'baseline',
+    alignItems: 'flex-end',
   },
-  sentenceRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    flexWrap: 'wrap',
-  },
-  sentenceText: {
+  // Surrounding words render as normal typeset text (good kerning / wrapping);
+  // only the answer is on a fixed cell grid. lineHeight ≈ cell height so the
+  // text baseline sits level with the blank boxes.
+  gridWordText: {
     color: colors.text,
     fontFamily: fonts.display.regular,
     fontWeight: '400',
-    fontSize: 22,
-    lineHeight: 34,
-    letterSpacing: -0.22,
+    fontSize: 20,
+    lineHeight: CELL_H,
   },
-  blank: {
-    marginHorizontal: 4,
-    transform: [{ translateY: 4 }],
+  gridWord: {
+    flexDirection: 'row',
+    marginVertical: 3,
   },
-  blankInput: {
-    backgroundColor: 'rgba(0,104,255,0.06)',
-    borderBottomWidth: 2,
-    borderBottomColor: colors.accent,
-    borderRadius: 4,
-    paddingVertical: 2,
-    paddingHorizontal: 8,
-    textAlign: 'center',
+  gridSpace: {
+    width: SPACE_W,
+    height: CELL_H,
+  },
+  gridCell: {
+    width: CELL_W,
+    height: CELL_H,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gridChar: {
+    color: colors.text,
     fontFamily: fonts.display.semibold,
     fontWeight: '600',
-    fontSize: 21,
-    color: colors.text,
+    fontSize: 20,
   },
-  blankInputCorrect: {
-    backgroundColor: 'rgba(127,176,105,0.16)',
-    borderBottomColor: palette.sage,
+  gridCharCorrect: {
     color: palette.sage,
   },
-  blankInputWrong: {
+  blankCell: {
+    borderBottomWidth: 2,
+    borderBottomColor: colors.accent,
+    backgroundColor: 'rgba(0,104,255,0.06)',
+    marginHorizontal: 1,
+    borderRadius: 3,
+  },
+  blankCellCorrect: {
+    backgroundColor: 'rgba(127,176,105,0.16)',
+    borderBottomColor: palette.sage,
+  },
+  blankCellWrong: {
     backgroundColor: 'rgba(177,8,4,0.07)',
     borderBottomColor: '#b10804',
+  },
+  gridHiddenInput: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
+    color: 'transparent',
   },
   sourceFooter: {
     marginTop: 22,
@@ -566,48 +803,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.ui.semibold,
     fontWeight: '600',
     fontSize: typography.body,
-  },
-  summaryWrap: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    gap: spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  summaryEyebrow: {
-    color: colors.accent,
-    fontFamily: fonts.ui.bold,
-    fontWeight: '700',
-    fontSize: 11,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  summaryHeadline: {
-    color: colors.text,
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontSize: typography.title,
-    textAlign: 'center',
-  },
-  summaryNext: {
-    color: colors.text,
-    fontFamily: fonts.ui.regular,
-    fontSize: typography.bodySm,
-    textAlign: 'center',
-  },
-  summarySpace: {
-    fontFamily: fonts.display.semibold,
-    fontWeight: '600',
-    fontStyle: 'italic',
-  },
-  errorBanner: {
-    color: colors.text,
-    backgroundColor: 'rgba(177,8,4,0.08)',
-    padding: spacing.sm,
-    borderRadius: radii.sm,
-    fontFamily: fonts.ui.medium,
-    fontSize: typography.caption,
-    textAlign: 'center',
   },
 });

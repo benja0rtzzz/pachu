@@ -65,10 +65,18 @@ async function handleHintRequest(
   const term = getTermById(termId);
   if (!term) return;
 
+  // Two-tier scheme: tier 1 is the deterministic structural pattern (never
+  // touches the LLM, can't leak the term); tier 2+ is the LLM contextual
+  // nudge, falling back to the structural hint if the LLM is unreachable.
+  const effectiveTier: 1 | 2 = tier <= 1 ? 1 : 2;
+
   let text: string;
   let kind: Hint['kind'];
 
-  if (tier === 1) {
+  if (effectiveTier === 1) {
+    text = computeStructuralHint(term.term);
+    kind = 'pattern';
+  } else {
     try {
       const hints = await generateCoachHints({
         llm,
@@ -77,22 +85,20 @@ async function handleHintRequest(
         styleAnchor: term.styleAnchor,
         observation,
       });
-      text = hints.tier1;
-      kind = 'nudge';
+      // The LLM nudge can come back empty (model returned only the term, which
+      // the leak-guard strips, or whitespace). Never ship an empty hint card:
+      // fall back to the verified definition, then the structural pattern.
+      const nudge = hints.tier2.trim();
+      text = nudge || term.definition.trim() || computeStructuralHint(term.term);
+      kind = nudge ? 'nudge' : 'definition';
     } catch {
       // LLM unavailable — fall back to the deterministic structural hint.
       text = computeStructuralHint(term.term);
       kind = 'pattern';
     }
-  } else if (tier === 2) {
-    text = computeStructuralHint(term.term);
-    kind = 'pattern';
-  } else {
-    text = term.definition;
-    kind = 'definition';
   }
 
-  send(ws, { type: 'hint', hint: { termId, tier, kind, text } });
+  send(ws, { type: 'hint', hint: { termId, tier: effectiveTier, kind, text } });
 }
 
 function send(ws: WebSocket, ev: CoachEvent) {

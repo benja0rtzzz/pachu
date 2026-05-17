@@ -46,3 +46,19 @@ CREATE TABLE IF NOT EXISTS review_events (
 
 CREATE INDEX IF NOT EXISTS idx_review_events_term ON review_events (term_id);
 CREATE INDEX IF NOT EXISTS idx_review_events_session ON review_events (session_id);
+
+-- In-progress puzzle state. One row per session (puzzle.id === session.id).
+-- `puzzle_json` freezes the generated puzzle so a resume returns the exact
+-- same items in the exact same order (no runtime regeneration/reorder).
+-- `progress_json` is the client's per-term state blob (answers, hint counts).
+-- Cascades on session AND notes_file delete, so removing a space wipes it.
+CREATE TABLE IF NOT EXISTS puzzle_progress (
+  session_id TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+  notes_file_id TEXT NOT NULL REFERENCES notes_files (id) ON DELETE CASCADE,
+  puzzle_kind TEXT NOT NULL CHECK (puzzle_kind IN ('crossword', 'cloze', 'flashcards')),
+  puzzle_json TEXT NOT NULL,
+  progress_json TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_puzzle_progress_notes_file ON puzzle_progress (notes_file_id);

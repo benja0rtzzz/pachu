@@ -5,6 +5,8 @@ interface NavigationContextValue {
   route: Route;
   navigate: (route: Route) => void;
   goBack: () => void;
+  /** Replace the whole stack. Empty/invalid input resets to the landing root. */
+  reset: (routes: Route[]) => void;
 }
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
@@ -35,6 +37,12 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setStack((prev) => {
       const top = prev[prev.length - 1];
       if (top && isSameRoute(top, next)) return prev;
+      // If the target already lives below the top, unwind to it instead of
+      // stacking a duplicate. Without this, "Back to spaces" from a puzzle
+      // pushes a second `spaces` entry, so a later Back lands on the stale
+      // PuzzlePicker instead of the landing screen.
+      const existingIdx = prev.findIndex((r) => isSameRoute(r, next));
+      if (existingIdx !== -1) return prev.slice(0, existingIdx + 1);
       return [...prev, next];
     });
   }, []);
@@ -43,9 +51,13 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
   }, []);
 
+  const reset = useCallback((routes: Route[]) => {
+    setStack(routes.length > 0 ? routes : [INITIAL_ROUTE]);
+  }, []);
+
   const value = useMemo(
-    () => ({ route, navigate, goBack }),
-    [route, navigate, goBack],
+    () => ({ route, navigate, goBack, reset }),
+    [route, navigate, goBack, reset],
   );
 
   return <NavigationContext.Provider value={value}>{children}</NavigationContext.Provider>;

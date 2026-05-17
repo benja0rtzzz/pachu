@@ -80,16 +80,16 @@ export function PrimaryButton({
         style,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator color={colors.textOnAccent} />
-      ) : (
-        <View style={styles.row}>
-          {leading}
-          {label ? (
-            <Text style={[styles.label, styles.labelPrimary]}>{label}</Text>
-          ) : null}
-        </View>
-      )}
+      <View style={styles.row}>
+        {loading ? (
+          <ActivityIndicator color={colors.textOnAccent} size="small" />
+        ) : (
+          leading ?? null
+        )}
+        {label ? (
+          <Text style={[styles.label, styles.labelPrimary]}>{label}</Text>
+        ) : null}
+      </View>
     </Pressable>
   );
 }
