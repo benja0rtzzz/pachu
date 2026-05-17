@@ -33,6 +33,8 @@ bun run dev:app       # in another
 
 Backend listens on `http://localhost:4000`. The Expo app reads `EXPO_PUBLIC_API_BASE_URL` (defaults to `http://localhost:4000`).
 
-## Architecture
+## For contributors
 
-See `/Users/joseortiz/.cursor/plans/puzzle_forge_coach_plan_bf49c4a1.plan.md` for the full design.
+- **Start here**: [`AGENTS.md`](AGENTS.md) — team coordination, conventions, live progress board.
+- **Full architecture**: [`docs/PLAN.md`](docs/PLAN.md) — diagrams, anti-hallucination contract, demo script.
+- **GitHub**: https://github.com/benja0rtzzz/pachu
