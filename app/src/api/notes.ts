@@ -1,13 +1,17 @@
-import type { NotesFile } from '@pachu/shared';
+import type { IngestRequest, IngestResponse } from '@pachu/shared';
+import { apiFetch } from './client';
 
-export async function ingestNotes(body: {
-  title: string;
-  content: string;
-}): Promise<NotesFile> {
-  return {
-    id: `local-${Date.now()}`,
-    title: body.title,
-    createdAt: new Date().toISOString(),
-    byteLength: new TextEncoder().encode(body.content).length,
-  };
+/**
+ * Create a new `Space` from raw notes. The backend ingest endpoint is
+ * LLM-free — it just persists `{title, content}` and returns a zero-term
+ * Space. Term extraction is a separate explicit call (see
+ * `extractSpaceTerms` in `./spaces.ts`); the NotesImport screen chains
+ * the two so a successful "Create space" tap lands in a fully-populated
+ * space.
+ */
+export async function ingestNotes(body: IngestRequest): Promise<IngestResponse> {
+  return apiFetch<IngestResponse>('/notes/ingest', {
+    method: 'POST',
+    body,
+  });
 }

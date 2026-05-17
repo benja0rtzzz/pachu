@@ -1,2 +1,2 @@
-export * from './types.js';
-export * from './design/palette.js';
+export * from './types';
+export * from './design/palette';

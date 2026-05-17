@@ -11,6 +11,21 @@ const NavigationContext = createContext<NavigationContextValue | null>(null);
 
 const INITIAL_ROUTE: Route = { name: 'landing' };
 
+// Dedupe rule: never push a duplicate of the current route, where "duplicate"
+// for parameterized routes means the *params* also match. Stops two taps on
+// the same spaces row from stacking the same space twice.
+function isSameRoute(a: Route, b: Route): boolean {
+  if (a.name !== b.name) return false;
+  if (a.name === 'space' && b.name === 'space') return a.spaceId === b.spaceId;
+  if (
+    (a.name === 'crossword' || a.name === 'cloze' || a.name === 'flashcards') &&
+    (b.name === 'crossword' || b.name === 'cloze' || b.name === 'flashcards')
+  ) {
+    return a.name === b.name && a.puzzleId === b.puzzleId;
+  }
+  return true;
+}
+
 export function NavigationProvider({ children }: { children: ReactNode }) {
   const [stack, setStack] = useState<Route[]>([INITIAL_ROUTE]);
 
@@ -19,18 +34,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const navigate = useCallback((next: Route) => {
     setStack((prev) => {
       const top = prev[prev.length - 1];
-      if (top && top.name === next.name) {
-        if (next.name === 'crossword' || next.name === 'cloze' || next.name === 'flashcards') {
-          if (
-            (top.name === 'crossword' || top.name === 'cloze' || top.name === 'flashcards') &&
-            top.puzzleId === next.puzzleId
-          ) {
-            return prev;
-          }
-        } else {
-          return prev;
-        }
-      }
+      if (top && isSameRoute(top, next)) return prev;
       return [...prev, next];
     });
   }, []);

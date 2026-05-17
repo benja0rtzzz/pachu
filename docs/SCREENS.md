@@ -72,23 +72,23 @@ explore existing spaces.
 
 ### MVP checklist
 
-- [ ] **Two primary CTAs.**
+- [x] **Two primary CTAs.**
   - **"Register notes"** → `import` (always enabled).
   - **"Explore my spaces"** → `spaces` (disabled when `spaces.length === 0`,
     with a caption "No spaces yet").
-- [ ] **Pre-flight gate** scoped to **"Register notes"** only — that path
+- [x] **Pre-flight gate** scoped to **"Register notes"** only — that path
   needs the LLM for term extraction, so read `HealthResponse.llm.reachable`
   and disable it inline ("Backend offline — start `bun run dev:backend`")
   when unhealthy. "Explore my spaces" stays enabled on cached spaces even
   when the banner is red, so the user can keep playing offline.
-- [ ] **Resume affordance.** If `useSpaces().resumablePuzzle` is non-null,
+- [x] **Resume affordance.** If `useSpaces().resumablePuzzle` is non-null,
   render a secondary button **"Resume {kind} in *{spaceTitle}*"** that
   routes to the matching puzzle screen so an accidental back-tap doesn't
   lose in-flight work.
 
 ### Stretch additions
 
-- [ ] **Stat strip.** Small row showing "N spaces · M terms · K due today",
+- [x] **Stat strip.** Small row showing "N spaces · M terms · K due today",
   computed client-side by reducing the `Space[]` returned from
   `GET /spaces`. Makes FSRS visible from the very first screen of the demo.
 
@@ -108,6 +108,12 @@ explore existing spaces.
   summary endpoint and "Get started / Continue" single-CTA logic dropped._
 - _2026-05-16 — Scoped to: MVP checklist + stat strip only. Demo-arc shortcut
   and LLM model chip explicitly dropped from this screen._
+- _2026-05-16 — Landed. `Landing.tsx` rewritten against `useSpaces()` (added
+  to `state/session.tsx` alongside the legacy `useSession`) and a local
+  `useLlmReachable()` poll of `/health`. `spaces` route added with a
+  placeholder `SpacesScreen` until the full list lands; `api/spaces.ts`
+  calls the real `GET /spaces` and falls back to MOCK_SPACES (flagged
+  inline) when the backend is unreachable so the demo stays usable offline._
 
 ---
 
