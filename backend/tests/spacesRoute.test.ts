@@ -17,6 +17,16 @@ const store = await import('../src/store/index.js');
 const { notesRouter } = await import('../src/routes/notes.js');
 const { spacesRouter } = await import('../src/routes/spaces.js');
 
+// Stub LLM adapter: every test in this file exercises a route that doesn't need the LLM,
+// but spacesRouter now takes one for `POST /:id/extract`. Returning anything keeps the
+// signature happy without spinning up Ollama in CI.
+const stubLlm = {
+  provider: 'stub',
+  model: 'stub',
+  async ping() { return true; },
+  async chat() { return '{"terms":[]}'; },
+};
+
 let server: http.Server;
 let baseUrl = '';
 
@@ -24,7 +34,7 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   app.use('/notes', notesRouter());
-  app.use('/spaces', spacesRouter());
+  app.use('/spaces', spacesRouter({ llm: stubLlm }));
 
   server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

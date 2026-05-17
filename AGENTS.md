@@ -116,6 +116,8 @@ something's wrong before you write any code.
 - [x] `backend/src/routes/puzzles.ts` — `POST /puzzles/generate`, `POST /puzzles/:id/finish`
 - [x] `backend/src/engines/crossword.ts` — wrap `crossword-layout-generator` (+ local `.d.ts` shim; package added to `backend/package.json` deps — run `bun install`)
 - [x] `backend/src/engines/cloze/` — sentence splitter, anchored, generated; reuses Person B's `clozeSentence` (verifier built in) with silent fallback
+- [x] `backend/src/routes/spaces.ts` — `POST /spaces/:id/extract` wires Person B's `extractTerms` + tier-1 verifier into the store. 422 on zero accepted (no force-fitting), 409 on re-extract attempts, 502 on LLM throw. Unblocks `/puzzles/generate` against fresh spaces.
+- [x] `backend/tests/flashcardsEngine.test.ts` — engine output shape, item order, spaceId/puzzleId propagation, and `validate()` rejection cases.
 
 ### Person B — LLM / Content
 - [x] `backend/src/llm/verify/spanCheck.ts` — span verifier (anti-hallucination tier 1)
@@ -159,6 +161,17 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-17 — `POST /spaces/:id/extract` is the single extraction entry
+  point; it refuses to force-fit and refuses to re-run.** Ingest stays
+  LLM-free (separate concern, decided 2026-05-16) and extraction is one
+  explicit POST against the space id. Zero accepted candidates returns 422
+  with `rejectedCount` instead of inserting noise — the source-of-truth
+  guarantee dies the day we let the LLM pad an empty term list. Re-extraction
+  on top of existing terms returns 409 rather than silently appending: we
+  have no merge story for FSRS state across an old + new term set, and dupes
+  would corrupt the term picker. Recovery is `DELETE /spaces/:id` + re-ingest,
+  which is intentional friction. LLM throws surface as 502 with the store
+  untouched; the client can retry.
 - **2026-05-16 — `puzzle.id === session.id`; puzzles are not persisted.** The
  store has no `puzzles` table; a session row created at `/puzzles/generate`
  doubles as the puzzle's identity, and the engine output is sent to the client

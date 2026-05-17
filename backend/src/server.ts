@@ -26,7 +26,7 @@ async function main() {
 
   app.use('/health', healthRouter({ llm, startedAt }));
   app.use('/notes', notesRouter());
-  app.use('/spaces', spacesRouter());
+  app.use('/spaces', spacesRouter({ llm }));
   app.use('/puzzles', puzzlesRouter({ llm }));
 
   app.get('/', (_req, res) => {
