@@ -157,6 +157,13 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-16 — Design tokens live in `shared/src/design/palette.ts`.** Two-tier
+  system: `@pachu/shared` exports raw pigment tokens (rust, ember, amber, mauve,
+  stone, plum, plus derived warm-dark shades void/ink/shadow/wine/mulberry/bone,
+  plus off-palette sage for `success`). `app/src/theme.ts` is now a thin
+  semantic-role mapper that imports `palette` — no hex codes in app code. Add new
+  colors to the palette, not inline. Backend can consume the same palette for
+  future styled outputs (status reports, PDF exports).
 - **2026-05-16 — Prompt revamp + corpus expansion.** All four LLM prompts (extract,
   cloze, clue, coach) now include contrastive good/bad examples inline. Small models
   like `gemma4:e2b` follow contrastive demonstrations more reliably than abstract rules.
