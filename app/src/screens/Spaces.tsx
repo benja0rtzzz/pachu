@@ -19,6 +19,7 @@ import { ScreenShell } from '../components/ScreenShell';
 import { TopBar } from '../components/TopBar';
 import { useNavigation } from '../navigation/NavigationContext';
 import { useSpaces } from '../state/session';
+import { useToast } from '../state/toast';
 import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
 
 const KIND_LABEL: Record<PuzzleKind, string> = {
@@ -71,10 +72,10 @@ export function SpacesScreen() {
     deleteSpace,
   } = useSpaces();
 
+  const toast = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [renameTarget, setRenameTarget] = useState<Space | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const sorted = useMemo(() => sortSpaces(spaces), [spaces]);
   const totalDue = useMemo(
@@ -111,8 +112,9 @@ export function SpacesScreen() {
     try {
       await renameSpace(renameTarget.id, next);
       setRenameTarget(null);
+      toast.show({ message: `Renamed to "${next}"`, tone: 'success' });
     } catch (err) {
-      setMutationError(`Rename failed: ${(err as Error).message}`);
+      toast.show({ message: `Rename failed: ${(err as Error).message}`, tone: 'error' });
       setRenameTarget(null);
     }
   };
@@ -122,8 +124,9 @@ export function SpacesScreen() {
     const doDelete = async () => {
       try {
         await deleteSpace(space.id);
+        toast.show({ message: `Deleted "${space.title}"`, tone: 'info' });
       } catch (err) {
-        setMutationError(`Delete failed: ${(err as Error).message}`);
+        toast.show({ message: `Delete failed: ${(err as Error).message}`, tone: 'error' });
       }
     };
     Alert.alert(`Delete "${space.title}"?`, message, [
@@ -190,7 +193,6 @@ export function SpacesScreen() {
       </View>
 
       {error && <Text style={styles.errorBanner}>Couldn't load spaces — {error}</Text>}
-      {mutationError && <Text style={styles.errorBanner}>{mutationError}</Text>}
 
       <ScrollView
         contentContainerStyle={[styles.list, { paddingBottom: spacing.xl + insets.bottom }]}

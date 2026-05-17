@@ -226,11 +226,12 @@ the existing `babel-preset-expo` preset (the plugin must be last in the
 - **M** ✅ Back-navigation routes to `space(puzzle.spaceId)`.
 
 ### Deferred (rolled forward to Phase 4)
-- **Hint surfaces** in Crossword + Cloze (button + WS `hint_request` + `CoachOverlay` mount). Rating mappers already count `hintsUsed`; just need the UI + WS plumbing.
-- **Mistake event** on wrong Cloze submit / wrong Crossword cell — pending WS client.
-- **Web-only file drop** in NotesImport (drag-and-drop callbacks). The native press-to-pick path works on all platforms via `expo-document-picker`.
-- **Replace-vs-append prompt** in NotesImport when raw-text textarea already has content and the user taps a demo — not promoted from stretch; current behavior is "demo dedupes by title or overwrites textarea via setRawMode toggle".
-- **Wrong-cell shake / coach hint stack** stretch items from SCREENS.md.
+- ✅ **Hint surfaces** in Crossword + Cloze — landed in Phase 4.3.
+- ✅ **Mistake event** on wrong Cloze submit / wrong Crossword cell — landed in Phase 4.3.
+- ✅ **Coach hint stack** (Crossword `maxVisible=3`) — landed in Phase 4.3.
+- ❌ Still deferred: **web-only file drop** in NotesImport (drag-and-drop callbacks). The native press-to-pick path works on all platforms via `expo-document-picker`.
+- ❌ Still deferred: **Replace-vs-append prompt** in NotesImport when raw-text textarea already has content and the user taps a demo — not promoted from stretch; current behavior is "demo dedupes by title or overwrites textarea via setRawMode toggle".
+- ❌ Still deferred: **Wrong-cell shake** animation on Crossword submit failure — pure polish.
 
 ---
 
@@ -275,26 +276,55 @@ the existing `babel-preset-expo` preset (the plugin must be last in the
 
 ---
 
-## Phase 4 — Cross-cutting wiring 🟡 **PARTIAL — landed alongside Phase 2**
+## Phase 4 — Cross-cutting wiring ✅ **COMPLETE**
 
-> The Phase 2 screens forced the API + state-store work forward so the
-> three remaining bullets (AsyncStorage, WS coach, toast) are the only
-> Phase 4 items still pending. Marking them out explicitly below.
+> Partially landed alongside Phase 2 (the API client + `useSpaces` /
+> `finishActivePuzzle` plumbing the screens needed to compile), then closed
+> out in a dedicated pass: AsyncStorage persistence, WS coach client +
+> overlay + hint wiring, toast surface, and legacy code cleanup.
 
 ### Landed during Phase 2 ✅
 - ✅ **`api/client.ts` centralization** — `apiFetch<T>()` helper + typed `ApiError` (carries status + parsed body). Used by every other `api/*` module.
 - ✅ **`api/notes.ts`** rewritten as a real `POST /notes/ingest` call returning `IngestResponse`.
-- ✅ **`api/puzzles.ts`** rewritten: `generatePuzzle({ kind, spaceId, targetCount? })` and `finishPuzzle(puzzleId, body)` against the real backend. The old `MOCK_*` fallback was dropped (mocks live unreferenced in `app/src/mocks/mockPuzzles.ts` — can be deleted in a cleanup pass).
+- ✅ **`api/puzzles.ts`** rewritten: `generatePuzzle({ kind, spaceId, targetCount? })` and `finishPuzzle(puzzleId, body)` against the real backend.
 - ✅ **`api/spaces.ts`** covers `listSpaces`, `getSpace`, `renameSpace`, `deleteSpace`, `extractSpaceTerms`. `listSpaces` retains the `MOCK_SPACES` offline fallback intentionally so the Landing demo stays usable without the backend.
-- ✅ **`useSpaces()` expansion** in `state/session.tsx`: `activeSpaceId`, `activeSpace`, `setActiveSpaceId`, `refreshSpace(id)`, `createSpace(input)`, `extractTerms(id)`, `renameSpace(id, title)` (optimistic w/ rollback on failure), `deleteSpace(id)` (optimistic w/ rollback). `LocalNotes` slice is still in `useSession` for back-compat — the only screen left that touches it is the placeholder code path inside `NotesImport`'s now-unused legacy `addNotes` plumbing; safe to delete in Phase 4 cleanup.
+- ✅ **`useSpaces()` expansion** in `state/session.tsx`: `activeSpaceId`, `activeSpace`, `setActiveSpaceId`, `refreshSpace(id)`, `createSpace(input)`, `extractTerms(id)`, `renameSpace(id, title)` (optimistic w/ rollback on failure), `deleteSpace(id)` (optimistic w/ rollback).
 - ✅ **`finishActivePuzzle(reviews)`** hook on `useSession` — POSTs to `/puzzles/:id/finish`, merges returned `space?` into cache (fallback `refreshSpace`), clears `activePuzzle`. Used by Cloze, Crossword, and Flashcards on session end.
 - ✅ **`sessionStartedAt` plumbing** — stamped inside `setActivePuzzle`; exposed on the session context for finish-request signing.
 
-### Still pending 🟡
-- 🟡 **AsyncStorage persistence**: save `{ spaces, activeSpaceId, activePuzzle, sessionStartedAt }` after each mutating call; rehydrate on `SessionProvider` mount. (`@react-native-async-storage/async-storage` already installed in Phase 0 — just needs to be wired through `useSession`.)
-- 🟡 **WS coach client `api/ws.ts`** + **`CoachOverlay.tsx`** component — connection w/ exp backoff exposing `useCoach() → { events, send, status }`, handling `hello / pong / mistake / hint`. Crossword + Cloze are wired to count `hintsUsed` in their rating mappers and have placeholder hint UI slots; they just need the WS button + overlay mounted.
-- 🟡 **Toast surface in `ScreenShell`** — one-line bottom toast for transient errors. Today Spaces uses inline error banners, NotesImport uses an error card, the puzzle screens use a fallback red banner inside their summary; consolidating all of these into a shared toast is the cleanup.
-- 🟡 **Cleanup**: delete the legacy `LocalNotes` slice from `useSession`, the unused `app/src/mocks/mockPuzzles.ts`, and the legacy `Screen.tsx` once nothing references it (only `ClueList.tsx` / `Grid.tsx` / the legacy `HealthBanner` still do — they're untouched by Phase 2 but no longer reachable from any screen).
+### Closed-out pass ✅
+
+#### 4.1 AsyncStorage persistence ✅ — `app/src/state/persistence.ts` + `state/session.tsx`
+- New `persistence.ts` module with a versioned storage key (`pachu/session/v1`), `loadPersistedSession()` / `savePersistedSession()` / `clearPersistedSession()`. Version mismatch returns `null` so a future schema bump can be migrated cleanly instead of crashing rehydration.
+- `SessionProvider` rehydrates on mount: cached `spaces`, `activeSpaceId`, `activePuzzle`, `sessionStartedAt` show immediately; `refreshSpaces()` reconciles in the background. `spacesLoading` flips to `false` immediately if there's a cache hit so the UI isn't blocked.
+- A `hydrated` flag gates the first save so an empty boot can't clobber stored data before rehydration completes.
+- A single `useEffect` watches the durable slice and writes after every change. Storage failures are logged in dev (`__DEV__`) and swallowed in prod — a hiccup never crashes the app or blocks a user action that already succeeded in memory.
+
+#### 4.2 WS coach client ✅ — `app/src/api/ws.tsx`
+- `CoachProvider` opens a single shared `WebSocket` to `/coach` (URL derived from `API_BASE_URL` via `http/https → ws/wss` conversion), mounted at app root.
+- Exposes `useCoach() → { status, events, send, clear }` where `status: 'idle' | 'connecting' | 'open' | 'closed'`.
+- Exponential backoff on close (`RECONNECT_MIN_MS = 1_000` → `RECONNECT_MAX_MS = 30_000`), 25s ping heartbeat (`PING_INTERVAL_MS`), event log capped at 50 entries (`MAX_EVENTS`).
+- Parses incoming JSON to `CoachEvent`; outgoing messages typed as `CoachClientMessage`.
+- No-op shape returned when no provider is mounted so unit tests / isolated component renders still work.
+
+#### 4.3 CoachOverlay + hint wiring ✅ — `app/src/components/CoachOverlay.tsx`, `screens/Cloze.tsx`, `screens/Crossword.tsx`
+- `CoachOverlay` subscribes to `useCoach()` and filters down to the latest hints for a given `termId`. Reanimated slide-up entrance, tier-tinted cards (1=nudge/blue, 2=pattern/sage, 3=definition/ink), per-hint dismiss. Dismiss set resets on `termId` change so dismissing a hint on one clue doesn't suppress hints on the next.
+- **Cloze** mounts `<CoachOverlay termId={item.termId} maxVisible={1} />`; **Crossword** mounts `maxVisible={3}` to land the SCREENS.md stretch item (last 3 hints stacked).
+- Both screens send `{ type: 'mistake', termId, observation }` on wrong submit/cell so a follow-up tier-1 nudge has context, and send `{ type: 'hint_request', termId, tier }` from the new `Hint` button with tier escalation (`hintsUsed + 1`, capped at 3).
+- `hintsUsed` is incremented locally to feed the existing per-term rating mappers (already counted them — just needed the hint button to fire).
+
+#### 4.4 Toast surface ✅ — `app/src/state/toast.tsx`
+- `ToastProvider` mounted at app root (outermost provider) above all screens. `useToast()` exposes `{ show({message, tone?, durationMs?}), dismiss() }`.
+- Single-queue: a new `show()` replaces the current toast (good enough for our flow where errors don't burst). Auto-dismiss after `durationMs` (default 3.5s). Tone tints: `info` (ink), `error` (deep red), `success` (sage). Reanimated slide-up entrance.
+- **Wired into Spaces** — old inline `mutationError` banner removed; rename/delete results now toast (`Renamed to "X"` success, `Deleted "X"` info, `Rename failed: ...` error). The list-fetch `error` banner stayed inline because it's not transient — it persists until the next pull-to-refresh succeeds.
+
+#### 4.5 Legacy cleanup ✅
+- **Deleted files** (5 total): `app/src/components/Screen.tsx`, `Grid.tsx`, `ClueList.tsx`, `crosswordGrid.ts`, `app/src/mocks/mockPuzzles.ts`. None had remaining importers after Phase 2.
+- **`LocalNotes` slice removed** from `state/session.tsx`: interface, `notes`/`activeNotesId` state, `addNotes` callback, `setActiveNotesId`, `activeNotes` memo, plus their entries in `SessionContextValue` / `value` / dep arrays. Grep across `app/` confirms no remaining references.
+- `app/src/mocks/demoNotes.ts` kept — still consumed by `NotesImport` for the demo-set chips.
+
+### Provider tree at app root
+`SafeAreaProvider → ToastProvider → SessionProvider → CoachProvider → NavigationProvider`. Order is intentional: toast must be outermost so it overlays everything (including modals); coach is nested under session so future cross-talk between session state and coach events stays clean.
 
 ---
 
@@ -314,7 +344,7 @@ the existing `babel-preset-expo` preset (the plugin must be last in the
 
 `Phase 0 → 1 → 3 → 5 → 2 (Landing, Spaces, Picker, NotesImport, Flashcards, Cloze, Crossword) → 4 (cross-cutting wiring interleaved with the screens that need it).`
 
-**Actual landing order:** 0 → 1 → 3 (landed by backend team) → 5 + 2.2/2.4 dependencies + most of 4 (interleaved as Phase 2 progressed) → 2.1 → 2.3 → 2.4 → 2.2 → 2.7 → 2.6 → 2.5 → final typecheck. Remaining: 🟡 AsyncStorage, 🟡 WS coach + CoachOverlay, 🟡 toast surface, 🟡 cleanup of legacy `LocalNotes` / `mockPuzzles.ts` / `Screen.tsx`.
+**Actual landing order:** 0 → 1 → 3 (landed by backend team) → 5 + 2.2/2.4 dependencies + most of 4 (interleaved as Phase 2 progressed) → 2.1 → 2.3 → 2.4 → 2.2 → 2.7 → 2.6 → 2.5 → Phase 4 closeout (AsyncStorage → WS coach → CoachOverlay + hint wiring → toast → legacy cleanup) → final typecheck.
 
 ---
 
@@ -324,25 +354,31 @@ the existing `babel-preset-expo` preset (the plugin must be last in the
 |---|---|
 | 0 — Foundation | ✅ COMPLETE |
 | 1 — Shared primitives | ✅ COMPLETE |
-| 2 — Per-screen rework | ✅ COMPLETE (with the hint/WS surfaces in 2.5/2.6 rolled forward to Phase 4) |
+| 2 — Per-screen rework | ✅ COMPLETE (hint/WS surfaces in 2.5/2.6 originally deferred, landed in 4.3) |
 | 3 — Shared contract changes | ✅ COMPLETE (landed by backend team) |
-| 4 — Cross-cutting wiring | 🟡 PARTIAL (API client + useSpaces + finishActivePuzzle done; AsyncStorage / WS coach / toast / cleanup pending) |
+| 4 — Cross-cutting wiring | ✅ COMPLETE |
 | 5 — Navigation | ✅ COMPLETE |
 
-`bun run typecheck` green across `@pachu/shared`, `@pachu/backend`, `@pachu/app` after every screen landing.
+**All six phases complete.** `bun run typecheck` green across `@pachu/shared`, `@pachu/backend`, `@pachu/app`. Next: end-to-end smoke against the live backend (start `bun run dev:backend` and `bun run dev:app:web`), confirm fonts/Skia render on each platform, then a polish pass for the items still in the deferred list below.
 
 ---
 
 ## Out of scope (explicitly deferred)
 
 - `ios-frame.jsx` / `tweaks-panel.jsx` / blueprint `app.jsx` — dev-only prototype chrome.
-- SCREENS.md *stretch* items not promoted to MVP (sparkline, filter chips, bulk delete, search, swipe gestures, keyboard shortcuts, debug drawer, animated transitions). Follow-up after MVP set ships.
+- SCREENS.md *stretch* items not promoted to MVP: per-space progress sparkline, filter chips, bulk delete, search-by-title, swipe gestures on flashcards, self-grade confidence preview, persistent front-font auto-sizing, keyboard shortcuts on web, in-app debug drawer / log viewer, animated transitions between screens, wrong-cell shake on Crossword.
+- Web-only drag-and-drop file callbacks in NotesImport (native press-to-pick works on all platforms).
+- Replace-vs-append prompt in NotesImport when raw-text textarea already has content and the user taps a demo.
+- LLM model chip on Landing.
+- Per-card progress bar in Cloze header (currently using the shared `ProgressBar` row above the card).
 
 ## Open risks
 
-- **Skia on web**: support is via WASM and adds bundle weight. If Expo Web is a hard target, sanity-check bundle size and lazy-load Skia. *(Status: not yet runtime-smoked; Phase 1 typecheck passed, but the first real smoke happens after Phase 4 toast surface lands and a dev server boot.)*
+- **Skia on web**: support is via WASM and adds bundle weight. If Expo Web is a hard target, sanity-check bundle size and lazy-load Skia. *(Status: not yet runtime-smoked.)*
 - **Font weight names**: Google Fonts packages export weight-suffixed family names; cross-platform `fontFamily` strings differ slightly. Centralized in `theme.fonts`. *(Status: needs visual smoke on iOS/Android to confirm all eight weights resolve.)*
-- **Backend MVP endpoints** — landed during Phase 1→2 transition; Phase 2 screens now hit the real surface. *(Status: green at compile time; needs end-to-end smoke against a live backend.)*
+- **Backend MVP endpoints** — landed during Phase 1→2 transition; the app now hits the real surface. *(Status: green at compile time; needs end-to-end smoke against a live backend + Ollama for extract / coach hint requests.)*
+- **Coach WS reconnect on backend bounce** — `useCoach` backs off exponentially to 30s. If a judge restarts the backend mid-demo the worst-case reconnect delay is 30s; consider exposing a manual "reconnect now" toggle if it bites.
 - **Palette wholesale replace** — handled in Phase 0; no further references to the warm scale remain outside `theme.ts`.
-- **`AlertActionSheetIOS` on Android** — `SpacesScreen` long-press uses the iOS action sheet API on iOS and falls back to a four-button `Alert` on Android. Visual parity is reasonable but the Android path is less idiomatic; revisit in a polish pass.
-- **`<View pointerEvents>` deprecation warning** — React Native 0.81 has deprecated the `pointerEvents` prop in favor of `style.pointerEvents`. Phase 2 screens use the prop form; cleanup task to migrate before the deprecation becomes an error.
+- **`ActionSheetIOS` on Android** — `SpacesScreen` long-press uses the iOS action sheet API on iOS and falls back to a four-button `Alert` on Android. Visual parity is reasonable but the Android path is less idiomatic; revisit in a polish pass.
+- **`<View pointerEvents>` deprecation warning** — React Native 0.81 has deprecated the `pointerEvents` prop in favor of `style.pointerEvents`. Multiple Phase 2/4 components use the prop form (`DitherField`, `Landing` status guard, `CoachOverlay`, `ToastView`); cleanup task to migrate before the deprecation becomes an error.
+- **AsyncStorage rehydrate on contract drift** — persisted `Space[]` blobs are versioned via the `pachu/session/v1` key. Any breaking change to `Space` / `SpaceSummary` requires bumping the version so old clients discard their cache rather than running with stale shape.

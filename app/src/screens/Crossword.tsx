@@ -15,6 +15,8 @@ import type {
   SessionFinishResponse,
 } from '@pachu/shared';
 import { palette } from '@pachu/shared';
+import { useCoach } from '../api/ws';
+import { CoachOverlay } from '../components/CoachOverlay';
 import { ProgressBar } from '../components/ProgressBar';
 import { PuzzleShell } from '../components/PuzzleShell';
 import { SecondaryButton } from '../components/PrimaryButton';
@@ -147,6 +149,7 @@ export function CrosswordScreen() {
   const { activePuzzle } = useSession();
   const { activeSpace } = useSpaces();
   const session = useSession();
+  const coach = useCoach();
   const puzzle =
     activePuzzle && isCrosswordPuzzle(activePuzzle) ? activePuzzle : null;
 
@@ -265,7 +268,8 @@ export function CrosswordScreen() {
         currentEntry.orientation === 'down' ? currentEntry.startY + i : currentEntry.startY;
       guess.push(cellLetter(x, y).toUpperCase());
     }
-    const correct = guess.join('') === currentEntry.term.toUpperCase();
+    const guessStr = guess.join('');
+    const correct = guessStr === currentEntry.term.toUpperCase();
     setTermStates((prev) => {
       const cur = prev[currentEntry.termId] ?? emptyTermState();
       return {
@@ -280,6 +284,27 @@ export function CrosswordScreen() {
     setFeedback(
       correct ? 'Correct!' : `Not quite — keep trying ${currentEntry.term.length}-letter answer`,
     );
+    if (!correct) {
+      // Stream the wrong attempt so a follow-up tier-1 hint has context.
+      coach.send({
+        type: 'mistake',
+        termId: currentEntry.termId,
+        observation: `Tried "${guessStr}" for "${currentEntry.term}"`,
+      });
+    }
+  };
+
+  const requestHint = () => {
+    const cur = termStates[currentEntry.termId] ?? emptyTermState();
+    const tier = Math.min(3, cur.hintsUsed + 1) as 1 | 2 | 3;
+    coach.send({ type: 'hint_request', termId: currentEntry.termId, tier });
+    setTermStates((prev) => ({
+      ...prev,
+      [currentEntry.termId]: {
+        ...(prev[currentEntry.termId] ?? emptyTermState()),
+        hintsUsed: cur.hintsUsed + 1,
+      },
+    }));
   };
 
   const revealCurrent = () => {
@@ -471,6 +496,23 @@ export function CrosswordScreen() {
         <Text style={styles.clueBody}>{currentEntry.clue}</Text>
 
         <View style={styles.clueActions}>
+          <Pressable
+            onPress={requestHint}
+            disabled={(currentTermState.hintsUsed ?? 0) >= 3}
+            style={[
+              styles.clueBtn,
+              styles.clueBtnSecondary,
+              (currentTermState.hintsUsed ?? 0) >= 3 && styles.clueBtnDisabled,
+            ]}
+          >
+            <Text style={styles.clueBtnSecondaryLabel}>
+              {currentTermState.hintsUsed === 0
+                ? 'Hint'
+                : currentTermState.hintsUsed >= 3
+                  ? 'No more hints'
+                  : `Hint (${currentTermState.hintsUsed}/3)`}
+            </Text>
+          </Pressable>
           <Pressable onPress={revealCurrent} style={[styles.clueBtn, styles.clueBtnSecondary]}>
             <Text style={styles.clueBtnSecondaryLabel}>Reveal</Text>
           </Pressable>
@@ -522,6 +564,8 @@ export function CrosswordScreen() {
           <Text style={styles.doneBtnLabel}>Done — finish session</Text>
         </Pressable>
       </View>
+
+      <CoachOverlay termId={currentEntry.termId} maxVisible={3} />
     </PuzzleShell>
   );
 }
@@ -669,6 +713,9 @@ const styles = StyleSheet.create({
     fontFamily: fonts.ui.semibold,
     fontWeight: '600',
     fontSize: typography.bodySm,
+  },
+  clueBtnDisabled: {
+    opacity: 0.5,
   },
   feedback: {
     color: colors.text,
