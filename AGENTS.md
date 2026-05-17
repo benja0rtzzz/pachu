@@ -129,6 +129,15 @@ something's wrong before you write any code.
 - [x] `backend/tests/spanCheck.test.ts` — 10 unit tests, all green
 - [x] `backend/tests/grounding.test.ts` — 10 unit tests, all green
 - [x] `backend/tests/coach.test.ts` — 5 unit tests for the deterministic structural hint
+- [x] `backend/src/llm/pipeline/ingestNotes.ts` — chunk + extract + deduplicate pipeline; store-agnostic
+- [x] `backend/src/engines/cloze/splitter.ts` — windowed source-chunk extractor (used by `generated.ts` + `index.ts`)
+- [x] `backend/src/engines/cloze/generated.ts` — `buildGeneratedItem` with silent grounding fallback
+- [x] `backend/tests/ingestNotes.test.ts` — 11 unit tests (splitting, dedup, diagnostics), all green
+- [x] `backend/tests/cloze.test.ts` — 26 unit tests (splitter, sentenceSplit, anchored, generated), all green
+- [x] `backend/tests/clozeEngine.test.ts` — 11 tests (validate + generate via engine interface), all green
+- [x] `backend/tests/setup.ts` — Bun test preload; locks `config.dataDir` to `backend/data/test/` before any test file can race on `PACHU_DATA_DIR`; required for the full suite to pass under `--max-concurrency 1`
+- [x] Cloze engine merge — teammate's `anchored.ts` + `index.ts` (PuzzleEngine interface, stabilityRouter integration, validate, try/catch) kept; our `splitter.ts` wired in to fix raw-notes-as-sourceChunk; `generated.ts` import updated for new anchored API; temp `_im_b` files removed
+- [x] `app/src/api/ws.ts` — `CoachWsClient` class + `useCoach()` React hook with auto-reconnect
 - [x] `backend/tests/extractTerms.live.test.ts` — live LLM smoke test (opt-in via `LLM_LIVE=1`)
 - [x] `backend/tests/clozeSentence.live.test.ts` — live LLM smoke test (opt-in via `LLM_LIVE=1`)
 - [x] `docs/demo-notes/japanese-101.md` — casual learning register
@@ -161,6 +170,16 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-17 — Cloze engine merge: keep teammate's structure, wire in B's splitter.**
+  Person A's `anchored.ts` is strictly better (word-boundary masking, non-ASCII support,
+  3-way sentence fallback, `MASK_TOKEN` constant, `AnchoredClozeResult` type). Person A's
+  `index.ts` is the correct integration point (implements `PuzzleEngine<>`, calls
+  `clozeModeForTerm` directly, has `validate()`). The one material bug in A's version was
+  passing the full `rawText` as `sourceChunk` to `generateClozeSentence` — B's
+  `splitter.ts` / `extractSourceChunk` fixes this. `generated.ts` updated to import
+  `buildAnchoredCloze` (new API). `_im_b` temp files deleted. 80 tests green.
+  Test preload (`tests/setup.ts`) added so all DB-touching test files share one
+  `config.dataDir` under `--max-concurrency 1` — eliminates the macOS vnode conflict.
 - **2026-05-17 — `POST /spaces/:id/extract` is the single extraction entry
   point; it refuses to force-fit and refuses to re-run.** Ingest stays
   LLM-free (separate concern, decided 2026-05-16) and extraction is one
