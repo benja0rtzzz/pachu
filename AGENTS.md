@@ -107,15 +107,15 @@ something's wrong before you write any code.
 ### Person A — Engine / Backend
 - [x] `backend/src/store/` — `bun:sqlite` schema + repos (`notes`, `terms` rows include serialized `ts-fsrs` card JSON; reviews, sessions)
 - [x] `backend/src/memory/fsrs.ts` — wraps `ts-fsrs`; `getCardForTerm` / `reviewTerm` / `isDue` / `getStabilityDays`, JSON persisted on `terms`
-- [ ] `backend/src/memory/termPicker.ts` — pick N due/weak/new terms for a session
-- [ ] `backend/src/memory/stabilityRouter.ts` — per-term `anchored | generated` decision
-- [ ] `backend/src/memory/ratingMapper.ts` — puzzle event → FSRS rating 1..4
+- [x] `backend/src/memory/termPicker.ts` — pick N due/weak/new terms for a session
+- [x] `backend/src/memory/stabilityRouter.ts` — per-term `anchored | generated` decision
+- [x] `backend/src/memory/ratingMapper.ts` — puzzle event → FSRS rating 1..4
 - [x] `backend/src/routes/notes.ts` — `POST /notes/ingest` stores raw text only (no LLM); `GET /notes/:id` (internal)
 - [x] `backend/src/memory/spaceSummary.ts` — computes `SpaceSummary` (termCount, dueCount, newCount, stableCount, dueToday, playedTodayKinds, streakDays)
 - [x] `backend/src/routes/spaces.ts` — `GET /spaces`, `GET /spaces/:id`, `PATCH /spaces/:id`, `DELETE /spaces/:id` (cascade via FK)
-- [ ] `backend/src/routes/puzzles.ts` — `POST /puzzles/generate`, `POST /puzzles/:id/finish`
-- [ ] `backend/src/engines/crossword.ts` — wrap `crossword-layout-generator`
-- [ ] `backend/src/engines/cloze/` — sentence splitter, anchored, generated, verifier
+- [x] `backend/src/routes/puzzles.ts` — `POST /puzzles/generate`, `POST /puzzles/:id/finish`
+- [x] `backend/src/engines/crossword.ts` — wrap `crossword-layout-generator` (+ local `.d.ts` shim; package added to `backend/package.json` deps — run `bun install`)
+- [x] `backend/src/engines/cloze/` — sentence splitter, anchored, generated; reuses Person B's `clozeSentence` (verifier built in) with silent fallback
 
 ### Person B — LLM / Content
 - [x] `backend/src/llm/verify/spanCheck.ts` — span verifier (anti-hallucination tier 1)
@@ -159,6 +159,30 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-16 — `puzzle.id === session.id`; puzzles are not persisted.** The
+ store has no `puzzles` table; a session row created at `/puzzles/generate`
+ doubles as the puzzle's identity, and the engine output is sent to the client
+ and forgotten. `/puzzles/:id/finish` only needs the per-term `Review[]` the
+ client sends back (FSRS state lives on the term row), so persisting the
+ puzzle JSON would be dead weight. The route also requires that the body's
+ `puzzleId` (when present) matches the URL `:id`, which makes regenerated /
+ stale puzzles fail closed instead of silently re-applying reviews to a wrong
+ session. Cross-space contamination is blocked the same way: each `Review`
+ whose `termId` doesn't belong to the session's `notesFileId` is dropped from
+ `acceptedCount`, not 4xx'd — clients can fire-and-forget.
+- **2026-05-16 — Cloze engine never throws on verifier failure.** The contract
+ from PLAN.md says generated mode falls back to anchored silently; this is
+ enforced at the engine boundary (`engines/cloze/index.ts`), not at the route.
+ Any failure path inside generated mode (LLM throw, missing `[MASK]`, ungrounded
+ entity) builds an anchored ClozeItem for that single item. The puzzle as a
+ whole always has `items.length === terms.length`, regardless of LLM weather.
+- **2026-05-16 — Term picker buckets are `due | weak | stable`, ordered by
+ most-overdue / weakest-stability / soonest-upcoming within each bucket.**
+ Unreviewed terms land at the top of `due` (FSRS treats them as due-now). The
+ weak bucket exists so a user with no overdue cards still gets stress on the
+ fragile terms instead of pure repetition of stable ones. The picker truncates
+ to the requested count but never pads — a space with 3 terms returns 3 picks
+ even when the caller asks for 8.
 - **2026-05-16 — Spaces paradigm adopted; `Space.id === notes_files.id`.**
   Driven by [`docs/SCREENS.md`](docs/SCREENS.md). The DB row is still
   `notes_files`; there is no separate `spaces` table. A `Space` is `NotesFile`

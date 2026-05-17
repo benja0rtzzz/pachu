@@ -38,7 +38,11 @@ describe('computeSpaceSummary', () => {
     } catch {
       // Best-effort.
     }
-    rmSync(testDataDir, { recursive: true, force: true });
+    try {
+      rmSync(testDataDir, { recursive: true, force: true });
+    } catch {
+      // Windows EBUSY race on the WAL file — OS will clean the tempdir later.
+    }
   });
 
   it('empty space yields all-zero summary', () => {
@@ -75,7 +79,12 @@ describe('computeSpaceSummary', () => {
       { term: 'k', definition: 'd', sourceSpan: 'k', styleAnchor: 'k' },
     ]);
     if (!term) throw new Error('seed failed');
+    // The route handler does both: advance the FSRS state AND append an audit row.
+    // `reviewTerm` is intentionally just the FSRS half (so the term picker can scan
+    // cards without dirtying the event log); the summary's `lastReviewedAt` reads from
+    // `review_events`, so the test must mirror the route's two-call pattern.
     fsrsMod.reviewTerm(term.id, 3);
+    store.appendReviewEvent({ termId: term.id, rating: 3, ms: 1000, hintsUsed: 0 });
     const s = computeSpaceSummary(id);
     expect(s.termCount).toBe(1);
     expect(s.newCount).toBe(0);
