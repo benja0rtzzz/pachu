@@ -25,6 +25,43 @@ export function endSession(sessionId: string): void {
   ]);
 }
 
+export interface SessionRow {
+  id: string;
+  notesFileId: string;
+  puzzleKind: PuzzleKind;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+/**
+ * Fetch a single session row by id, or null when no such session exists. The puzzles
+ * route uses this to verify that a `POST /puzzles/:id/finish` targets a real, owned,
+ * not-yet-finished session before applying any reviews.
+ */
+export function getSession(id: string): SessionRow | null {
+  const db = getDatabase();
+  const row = db
+    .query(
+      `SELECT id, notes_file_id, puzzle_kind, started_at, ended_at
+       FROM sessions WHERE id = ?`,
+    )
+    .get(id) as {
+    id: string;
+    notes_file_id: string;
+    puzzle_kind: PuzzleKind;
+    started_at: string;
+    ended_at: string | null;
+  } | null;
+  if (!row) return null;
+  return {
+    id: row.id,
+    notesFileId: row.notes_file_id,
+    puzzleKind: row.puzzle_kind,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+  };
+}
+
 /**
  * Most recent ended session for a notes file (i.e. a Space), or null if none exists.
  * `SpaceSummary.lastPuzzleKind` is sourced from this.

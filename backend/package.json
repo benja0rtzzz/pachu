@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@pachu/shared": "*",
+    "crossword-layout-generator": "^0.1.1",
     "express": "^4.21.2",
     "ts-fsrs": "^4.6.1",
     "ws": "^8.18.0"

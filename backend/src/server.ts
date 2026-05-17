@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { OllamaAdapter } from './llm/ollama.js';
 import { healthRouter } from './routes/health.js';
 import { notesRouter } from './routes/notes.js';
+import { puzzlesRouter } from './routes/puzzles.js';
 import { spacesRouter } from './routes/spaces.js';
 import { openDatabase } from './store/db.js';
 import { attachCoachWs } from './ws/coach.js';
@@ -26,11 +27,12 @@ async function main() {
   app.use('/health', healthRouter({ llm, startedAt }));
   app.use('/notes', notesRouter());
   app.use('/spaces', spacesRouter());
+  app.use('/puzzles', puzzlesRouter({ llm }));
 
   app.get('/', (_req, res) => {
     res.json({
       service: 'pachu-backend',
-      try: ['/health', '/spaces', '/notes/ingest', '/coach (WS)'],
+      try: ['/health', '/spaces', '/notes/ingest', '/puzzles/generate', '/coach (WS)'],
     });
   });
 

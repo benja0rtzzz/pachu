@@ -240,17 +240,98 @@ per-connection so subsequent tier-1 nudges have context.
 
 ---
 
+## Puzzles
+
+A **puzzle** has no DB row of its own. `POST /puzzles/generate` creates a
+session row and returns the engine's output with `puzzle.id === session.id`.
+`POST /puzzles/:id/finish` ends that session and applies the per-term
+`Review[]` (which updates FSRS state on the `terms` rows).
+
+### `POST /puzzles/generate`
+
+**Request body — `GeneratePuzzleRequest`**
+
+| Field         | Type                         | Required | Notes                                                                              |
+| ------------- | ---------------------------- | -------- | ---------------------------------------------------------------------------------- |
+| `kind`        | `'crossword'\|'cloze'\|'flashcards'` | yes | Selects the engine.                                                                |
+| `spaceId`     | string                       | yes      | Must reference an existing space.                                                  |
+| `targetCount` | number                       | no       | Soft cap (clamped to `[1, 25]`). Defaults: crossword 8, cloze 8, flashcards 12.    |
+
+```json
+{ "kind": "cloze", "spaceId": "5f6c...", "targetCount": 6 }
+```
+
+**Responses**
+
+- `200 OK` — a `Puzzle` (`CrosswordPuzzle | ClozePuzzle | FlashcardsPuzzle`).
+  All three variants carry `id`, `spaceId`, and a `kind` discriminant. Cloze
+  items use the shared `MASK_TOKEN` (`[MASK]`) in `sentence`. Items per term
+  are equal to the picker's output count (≤ `targetCount`, ≤ space's
+  available terms).
+- `400 Bad Request` — invalid `kind` or missing `spaceId`.
+- `404 Not Found` — no such space.
+- `422 Unprocessable Entity` — space exists but has no extracted terms yet
+  (`{ "error": "no terms available in this space yet — ingest notes and extract terms first" }`),
+  or the crossword layout placed zero entries.
+- `502 Bad Gateway` — engine threw (e.g. crossword's clueStylist couldn't
+  reach the LLM at all). Note: per-clue LLM failures fall back to the term's
+  definition; this is only for whole-pipeline failures. Cloze never 502s —
+  generated-mode failures fall back silently to anchored.
+
+### `POST /puzzles/:id/finish`
+
+`:id` is the `puzzle.id` returned by `/generate` (== `session.id`). The route
+applies each `Review` via `reviewTerm` (FSRS persisted on the term row),
+appends a `review_events` row, and ends the session. Reviews whose `termId`
+doesn't belong to this session's space are silently dropped from
+`acceptedCount` — clients can safely retry.
+
+**Request body — `SessionFinishRequest`**
+
+```json
+{
+  "puzzleId": "8f1e...",
+  "sessionStartedAt": "2026-05-16T22:35:01.187Z",
+  "reviews": [
+    { "termId": "...", "rating": 3, "ms": 4123, "hintsUsed": 0 },
+    { "termId": "...", "rating": 4, "ms": 1980, "hintsUsed": 0 }
+  ]
+}
+```
+
+`rating` is `1|2|3|4` (Again/Hard/Good/Easy). For Crossword and Cloze the app
+derives this rating from solver telemetry via `memory/ratingMapper.ts`; for
+Flashcards the user picks directly.
+
+**Responses**
+
+- `200 OK` — `SessionFinishResponse`:
+
+  ```json
+  {
+    "acceptedCount": 2,
+    "nextDueAt": "2026-05-19T14:22:00.000Z",
+    "space": { "id": "...", "title": "...", "summary": { ... } }
+  }
+  ```
+
+  `nextDueAt` is the earliest `due` across all FSRS cards in the space, or
+  omitted when nothing is scheduled (all terms unreviewed). `space` saves
+  the caller a follow-up `GET /spaces/:id`.
+
+- `400 Bad Request` — `puzzleId` in body disagrees with `:id`, or `reviews`
+  isn't an array.
+- `404 Not Found` — no such session.
+- `409 Conflict` — session has already been finished (idempotency guard).
+
+---
+
 ## Not yet wired (don't expect these to answer)
 
-These endpoints are on the Person A board in `AGENTS.md`; this section is here
-so callers don't code against guesses. **Wire shapes are pinned in
-`shared/src/types.ts` — paths are still flexible.**
+These items are still on the Person A / B boards in `AGENTS.md`; this section
+is here so callers don't code against guesses.
 
-- `POST /puzzles/generate` — body `GeneratePuzzleRequest { kind, spaceId, targetCount? }`;
-  returns a `Puzzle` (one of `CrosswordPuzzle | ClozePuzzle | FlashcardsPuzzle`,
-  all of which carry a `spaceId`).
-- `POST /puzzles/:id/finish` — body `SessionFinishRequest`; response
-  `SessionFinishResponse` includes an optional refreshed `Space` so the
-  app doesn't need a follow-up `GET /spaces/:id`.
-- Term extraction call (path TBD) — runs `extractTerms` against a stored
-  space and persists the verified candidates.
+- Term extraction call (path TBD) — runs Person B's `extractTerms` against a
+  stored space and persists the verified candidates. Until this lands,
+  `/puzzles/generate` 422s on freshly-ingested spaces because the term
+  picker has nothing to pick from.
