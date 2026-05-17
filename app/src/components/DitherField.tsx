@@ -1,136 +1,32 @@
-import { StyleSheet, View, type LayoutChangeEvent, type ViewStyle } from 'react-native';
-import {
-  Canvas,
-  Picture,
-  Skia,
-  createPicture,
-} from '@shopify/react-native-skia';
-import {
-  useDerivedValue,
-  useFrameCallback,
-  useSharedValue,
-} from 'react-native-reanimated';
+import { lazy, Suspense } from 'react';
+import { StyleSheet, View, type ViewStyle } from 'react-native';
+import { ensureSkiaReady } from '../skiaLoader';
+import type { DitherFieldProps } from './DitherFieldInner';
 
-// Skia port of `app/screens/dither-field.jsx`. Same multi-sine noise,
-// same per-intensity base/amp/opacity/max scale, same gradient masks.
-// Drawn imperatively into a Skia `Picture` on the UI thread each frame.
+// Public gate. NO `@shopify/react-native-skia` imports here — Skia's web
+// build constructs its `Skia` API at module-init time using
+// `global.CanvasKit`. If anything imports the Skia package before
+// `LoadSkiaWeb` resolves, `Skia.*` factories are permanently bound to an
+// undefined CanvasKit and every call throws
+// "Cannot read properties of undefined (reading 'PictureRecorder')".
+//
+// We sidestep that by lazy-importing `./DitherFieldInner` only after
+// `ensureSkiaReady()` resolves. On native this is effectively immediate
+// (`ensureSkiaReady` short-circuits via `Platform.OS !== 'web'`).
+const DitherFieldInner = lazy(async () => {
+  await ensureSkiaReady();
+  return import('./DitherFieldInner');
+});
 
-type Intensity = 'hero' | 'medium' | 'low';
-type Gradient = 'none' | 'top' | 'bottom' | 'radial';
-
-interface Props {
-  intensity?: Intensity;
-  speed?: number;
-  pulse?: boolean;
-  gridSize?: number;
-  color?: string;
-  gradient?: Gradient;
-  style?: ViewStyle;
-}
-
-const CONFIG: Record<
-  Intensity,
-  { base: number; amp: number; opacity: number; max: number }
-> = {
-  hero: { base: 0.55, amp: 0.4, opacity: 1.0, max: 0.46 },
-  medium: { base: 0.32, amp: 0.22, opacity: 0.55, max: 0.42 },
-  low: { base: 0.16, amp: 0.14, opacity: 0.28, max: 0.4 },
-};
-
-export function DitherField({
-  intensity = 'medium',
-  speed = 1,
-  pulse = true,
-  gridSize = 12,
-  color = '#0068ff',
-  gradient = 'none',
-  style,
-}: Props) {
-  const cfg = CONFIG[intensity];
-  const t = useSharedValue(0);
-  const w = useSharedValue(1);
-  const h = useSharedValue(1);
-
-  useFrameCallback((info) => {
-    'worklet';
-    const dtMs = info.timeSincePreviousFrame ?? 16;
-    t.value += (dtMs / 1000) * speed;
-  });
-
-  const picture = useDerivedValue(() => {
-    'worklet';
-    const W = w.value;
-    const H = h.value;
-    const tNow = t.value;
-    const base = cfg.base;
-    const amp = cfg.amp;
-    const maxScale = cfg.max;
-
-    return createPicture((canvas) => {
-      const paint = Skia.Paint();
-      paint.setColor(Skia.Color(color));
-
-      const pulseFactor = pulse
-        ? base + amp * (0.5 + 0.5 * Math.sin(tNow * 0.9))
-        : base + amp * 0.6;
-
-      const cols = Math.ceil(W / gridSize) + 1;
-      const rows = Math.ceil(H / gridSize) + 1;
-      const halfCell = gridSize / 2;
-      const maxR = gridSize * maxScale;
-
-      for (let j = 0; j < rows; j++) {
-        for (let i = 0; i < cols; i++) {
-          const px = i * gridSize + halfCell;
-          const py = j * gridSize + halfCell;
-
-          // Multi-sine pseudo-noise, identical to the JS reference.
-          const a =
-            Math.sin(px * 0.018 + tNow * 0.27) *
-            Math.cos(py * 0.022 - tNow * 0.21);
-          const b = Math.sin((px + py) * 0.013 + tNow * 0.13);
-          const c = Math.cos((px - py * 0.7) * 0.009 - tNow * 0.18);
-          const n = (a * 0.5 + b * 0.3 + c * 0.2 + 1) * 0.5;
-
-          let density = pulseFactor * (0.55 + 0.55 * n);
-
-          if (gradient === 'top') {
-            density *= Math.max(0, 1 - (py / H) * 1.15);
-          } else if (gradient === 'bottom') {
-            density *= Math.max(0, (py / H) * 1.15 - 0.05);
-          } else if (gradient === 'radial') {
-            const dx = px - W / 2;
-            const dy = py - H / 2;
-            const d =
-              Math.sqrt(dx * dx + dy * dy) / (Math.max(W, H) * 0.55);
-            density *= Math.max(0, 1 - d * 0.9);
-          }
-
-          const r = Math.max(0, Math.min(maxR, density * maxR * 1.25));
-          if (r < 0.25) continue;
-          canvas.drawCircle(px, py, r, paint);
-        }
-      }
-    });
-  });
-
-  const onLayout = (e: LayoutChangeEvent) => {
-    w.value = e.nativeEvent.layout.width;
-    h.value = e.nativeEvent.layout.height;
-  };
-
+export function DitherField(props: DitherFieldProps) {
   return (
-    <View
-      style={[styles.fill, { opacity: cfg.opacity }, style]}
-      onLayout={onLayout}
-      pointerEvents="none"
-    >
-      <Canvas style={styles.fill}>
-        <Picture picture={picture} />
-      </Canvas>
-    </View>
+    <Suspense fallback={<View style={[styles.fill, props.style]} pointerEvents="none" />}>
+      <DitherFieldInner {...props} />
+    </Suspense>
   );
 }
+
+export type { DitherFieldProps };
 
 const styles = StyleSheet.create({
   fill: { ...StyleSheet.absoluteFillObject },

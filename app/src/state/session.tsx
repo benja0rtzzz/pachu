@@ -27,16 +27,7 @@ import {
 } from '../api/spaces';
 import { ingestNotes } from '../api/notes';
 import { finishPuzzle as apiFinishPuzzle } from '../api/puzzles';
-
-// Legacy notes slice — kept so the unported legacy `NotesImportScreen` and
-// `PuzzlePickerScreen` placeholders still compile. The Phase 2.2 + 2.4
-// rework migrates them onto `useSpaces`, after which this can be deleted.
-export interface LocalNotes {
-  id: string;
-  title: string;
-  content: string;
-  createdAt: string;
-}
+import { loadPersistedSession, savePersistedSession } from './persistence';
 
 /** Lightweight handle a screen needs to "resume" an in-flight puzzle. */
 export interface ResumablePuzzle {
@@ -47,8 +38,6 @@ export interface ResumablePuzzle {
 }
 
 interface SessionState {
-  notes: LocalNotes[];
-  activeNotesId: string | null;
   activePuzzle: Puzzle | null;
   sessionStartedAt: string | null;
   spaces: Space[];
@@ -58,10 +47,7 @@ interface SessionState {
 }
 
 interface SessionContextValue extends SessionState {
-  activeNotes: LocalNotes | null;
   activeSpace: Space | null;
-  addNotes: (input: { title: string; content: string }) => LocalNotes;
-  setActiveNotesId: (id: string) => void;
   setActivePuzzle: (puzzle: Puzzle | null) => void;
   setActiveSpaceId: (id: string | null) => void;
   refreshSpaces: () => Promise<void>;
@@ -75,19 +61,16 @@ interface SessionContextValue extends SessionState {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-function makeId(): string {
-  return `notes-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [notes, setNotes] = useState<LocalNotes[]>([]);
-  const [activeNotesId, setActiveNotesId] = useState<string | null>(null);
   const [activePuzzle, setActivePuzzleState] = useState<Puzzle | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [spacesLoading, setSpacesLoading] = useState<boolean>(true);
   const [spacesError, setSpacesError] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
+  // Hydration: gate the first persistence write on a successful rehydrate so
+  // we don't overwrite cached state with the initial empty values mid-boot.
+  const [hydrated, setHydrated] = useState(false);
 
   // Stamp `sessionStartedAt` whenever a fresh puzzle is loaded. Used as the
   // baseline for `Review.ms` and as the `sessionStartedAt` field on the
@@ -223,26 +206,42 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [activePuzzle, sessionStartedAt, mergeSpace, refreshSpace, setActivePuzzle],
   );
 
+  // Rehydrate persisted session on mount, then kick off a background refresh
+  // so cached space summaries get reconciled with the server. Cached data
+  // shows immediately; the network update is opportunistic.
   useEffect(() => {
-    void refreshSpaces();
+    let cancelled = false;
+    void (async () => {
+      const cached = await loadPersistedSession();
+      if (cancelled) return;
+      if (cached) {
+        if (cached.spaces.length > 0) setSpaces(cached.spaces);
+        if (cached.activeSpaceId) setActiveSpaceId(cached.activeSpaceId);
+        if (cached.activePuzzle) setActivePuzzleState(cached.activePuzzle);
+        if (cached.sessionStartedAt) setSessionStartedAt(cached.sessionStartedAt);
+        // Mark loading false so the UI can render cached spaces immediately;
+        // refreshSpaces() flips it back to true while the fetch runs.
+        setSpacesLoading(false);
+      }
+      setHydrated(true);
+      void refreshSpaces();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [refreshSpaces]);
 
-  const addNotes = useCallback((input: { title: string; content: string }) => {
-    const entry: LocalNotes = {
-      id: makeId(),
-      title: input.title.trim() || 'Untitled notes',
-      content: input.content,
-      createdAt: new Date().toISOString(),
-    };
-    setNotes((prev) => [...prev, entry]);
-    setActiveNotesId(entry.id);
-    return entry;
-  }, []);
-
-  const activeNotes = useMemo(
-    () => notes.find((n) => n.id === activeNotesId) ?? null,
-    [notes, activeNotesId],
-  );
+  // Persist whenever the durable slice changes. Skipped until hydration
+  // completes so a fresh-boot empty state can't clobber stored data.
+  useEffect(() => {
+    if (!hydrated) return;
+    void savePersistedSession({
+      spaces,
+      activeSpaceId,
+      activePuzzle,
+      sessionStartedAt,
+    });
+  }, [hydrated, spaces, activeSpaceId, activePuzzle, sessionStartedAt]);
 
   const activeSpace = useMemo(
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
@@ -251,9 +250,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<SessionContextValue>(
     () => ({
-      notes,
-      activeNotesId,
-      activeNotes,
       activePuzzle,
       sessionStartedAt,
       spaces,
@@ -261,8 +257,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       spacesError,
       activeSpaceId,
       activeSpace,
-      addNotes,
-      setActiveNotesId,
       setActivePuzzle,
       setActiveSpaceId,
       refreshSpaces,
@@ -274,9 +268,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       finishActivePuzzle,
     }),
     [
-      notes,
-      activeNotesId,
-      activeNotes,
       activePuzzle,
       sessionStartedAt,
       spaces,
@@ -284,7 +275,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       spacesError,
       activeSpaceId,
       activeSpace,
-      addNotes,
       setActivePuzzle,
       refreshSpaces,
       refreshSpace,

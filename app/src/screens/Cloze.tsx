@@ -10,6 +10,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ClozeItem, Rating, Review, SessionFinishResponse } from '@pachu/shared';
 import { MASK_TOKEN, palette } from '@pachu/shared';
+import { useCoach } from '../api/ws';
+import { CoachOverlay } from '../components/CoachOverlay';
 import { ProgressBar } from '../components/ProgressBar';
 import { PuzzleShell } from '../components/PuzzleShell';
 import { SecondaryButton } from '../components/PrimaryButton';
@@ -56,6 +58,7 @@ export function ClozeScreen() {
   const { activePuzzle } = useSession();
   const { activeSpace } = useSpaces();
   const session = useSession();
+  const coach = useCoach();
   const puzzle =
     activePuzzle && isClozePuzzle(activePuzzle) ? activePuzzle : null;
 
@@ -118,11 +121,28 @@ export function ClozeScreen() {
     };
     setState(next);
     setSubmitted(correct ? 'correct' : 'wrong');
+    if (!correct) {
+      // Stream the wrong attempt as a mistake observation so a follow-up
+      // tier-1 hint request can be grounded in what the user actually typed.
+      coach.send({
+        type: 'mistake',
+        termId: item.termId,
+        observation: `Wrote "${guess}" for "${item.answer}"`,
+      });
+    }
     if (!correct && next.attempts >= MAX_ATTEMPTS_BEFORE_FORCE_REVEAL) {
       // Force reveal so the user always advances.
       setState({ ...next, revealed: true });
       setDraft(item.answer);
     }
+  };
+
+  // Tier escalation: each tap moves up one tier (1 → 2 → 3) until reveal.
+  // `hintsUsed` increments locally so the rating mapper can penalize.
+  const requestHint = () => {
+    const tier = Math.min(3, state.hintsUsed + 1) as 1 | 2 | 3;
+    coach.send({ type: 'hint_request', termId: item.termId, tier });
+    setState({ ...state, hintsUsed: state.hintsUsed + 1 });
   };
 
   const reveal = () => {
@@ -297,6 +317,23 @@ export function ClozeScreen() {
       <View style={[styles.actions, { paddingBottom: spacing.lg + insets.bottom }]}>
         {!state.correct && !state.revealed && submitted !== 'correct' && (
           <>
+            <Pressable
+              onPress={requestHint}
+              disabled={state.hintsUsed >= 3}
+              style={[
+                styles.actionBtn,
+                styles.actionSecondary,
+                state.hintsUsed >= 3 && styles.actionDisabled,
+              ]}
+            >
+              <Text style={styles.actionSecondaryLabel}>
+                {state.hintsUsed === 0
+                  ? 'Hint'
+                  : state.hintsUsed >= 3
+                    ? 'No more hints'
+                    : `Hint (${state.hintsUsed}/3)`}
+              </Text>
+            </Pressable>
             <Pressable onPress={reveal} style={[styles.actionBtn, styles.actionSecondary]}>
               <Text style={styles.actionSecondaryLabel}>Reveal</Text>
             </Pressable>
@@ -321,6 +358,8 @@ export function ClozeScreen() {
           </Pressable>
         )}
       </View>
+
+      <CoachOverlay termId={item.termId} maxVisible={1} />
     </PuzzleShell>
   );
 }
