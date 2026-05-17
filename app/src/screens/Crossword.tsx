@@ -247,6 +247,24 @@ export function CrosswordScreen() {
     });
   };
 
+  // Snapshot on unmount so a plain "back" (typed letters but no Submit yet)
+  // survives. The earlier debounced autosave lost everything because its own
+  // cleanup cancelled the pending save; reading from refs in the cleanup
+  // avoids both the stale-closure and the cancelled-timer traps.
+  const lettersRef = useRef(letters);
+  lettersRef.current = letters;
+  const termStatesRef = useRef(termStates);
+  termStatesRef.current = termStates;
+  useEffect(() => {
+    return () => {
+      if (!puzzleId || !readyRef.current) return;
+      void savePuzzleProgress(puzzleId, {
+        letters: lettersRef.current,
+        termStates: termStatesRef.current,
+      });
+    };
+  }, [puzzleId]);
+
   // Summary must be checked BEFORE the no-puzzle guard: finishing the session
   // clears `activePuzzle`, so without this the stats screen would be masked by
   // the "No crossword loaded" fallback.

@@ -131,13 +131,29 @@ export function NotesImportScreen() {
     }
 
     setStage({ kind: 'extracting', spaceId });
-    setProgress({ label: 'Preparing notes…', value: 0.04 });
+    // Pre-cycle: the WS is still opening. Show an indeterminate sweep under
+    // "Establishing connection…" until the first real stage event arrives and
+    // the determinate cycle (preparing → model → verifying → saving) kicks in.
+    setProgress({ label: 'Establishing connection…', value: null });
     try {
       await runExtraction(spaceId, (info) => {
         if (info.stage === 'preparing') {
           setProgress({ label: 'Preparing notes…', value: 0.05 });
         } else if (info.stage === 'calling-model') {
-          setProgress({ label: 'Asking the model…', value: null });
+          // The model streams tokens; `current` is the running count. We don't
+          // know the final length, so ease along an asymptotic curve that
+          // always moves with output but never reaches the verifying band
+          // (0.55). Before the first token arrives, fall back to the sweep.
+          const tokens = info.current;
+          if (typeof tokens === 'number' && tokens > 0) {
+            const frac = 0.1 + 0.42 * (tokens / (tokens + 1200));
+            setProgress({
+              label: `Asking the model… (${tokens} tokens)`,
+              value: frac,
+            });
+          } else {
+            setProgress({ label: 'Asking the model…', value: null });
+          }
         } else if (info.stage === 'verifying') {
           const frac =
             info.total && info.total > 0 ? (info.current ?? 0) / info.total : 0;
@@ -149,9 +165,12 @@ export function NotesImportScreen() {
           setProgress({ label: 'Saving terms…', value: 0.97 });
         }
       });
-      // Pull the now-populated space into session state, then open it.
+      // Pull the now-populated space into session state, then open it — but
+      // let the bar finish filling to 100% and rest a beat first so the page
+      // doesn't swap out mid-animation.
       await refreshSpace(spaceId);
-      setProgress(null);
+      setProgress({ label: 'Ready', value: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 650));
       openSpace(spaceId);
     } catch (err) {
       setProgress(null);
@@ -246,7 +265,16 @@ export function NotesImportScreen() {
             )}
 
             <View style={styles.altCenter}>
-              <GhostLink label="Input raw text instead →" onPress={() => setRawMode(true)} />
+              {pickedFile ? (
+                <Text style={styles.lockHint}>
+                  Remove the file to type raw text instead.
+                </Text>
+              ) : (
+                <GhostLink
+                  label="Input raw text instead →"
+                  onPress={() => setRawMode(true)}
+                />
+              )}
             </View>
           </>
         ) : (
@@ -261,7 +289,14 @@ export function NotesImportScreen() {
               style={styles.textarea}
             />
             <View style={styles.altCenter}>
-              <GhostLink label="← Back to file upload" onPress={() => setRawMode(false)} />
+              {rawText.trim().length > 0 ? (
+                <GhostLink label="Clear text" onPress={() => setRawText('')} />
+              ) : (
+                <GhostLink
+                  label="← Back to file upload"
+                  onPress={() => setRawMode(false)}
+                />
+              )}
             </View>
           </>
         )}
@@ -326,7 +361,7 @@ export function NotesImportScreen() {
         <LoadingBarButton
           label={
             stage.kind === 'storing'
-              ? 'Storing notes…'
+              ? 'Establishing connection…'
               : stage.kind === 'extracting'
                 ? progress?.label ?? 'Extracting terms…'
                 : 'Create space'
@@ -550,6 +585,12 @@ const styles = StyleSheet.create({
   },
   altCenter: {
     alignItems: 'center',
+  },
+  lockHint: {
+    color: colors.muted,
+    fontFamily: fonts.ui.medium,
+    fontSize: typography.caption,
+    textAlign: 'center',
   },
   textarea: {
     minHeight: 220,

@@ -12,6 +12,11 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Sampling temperature. Defaults to 1.0 (gemma4 spec). */
   temperature?: number;
+  /**
+   * Called as the model streams, with the running count of generated tokens.
+   * Lets long calls drive a determinate progress UI instead of a blind spinner.
+   */
+  onProgress?: (tokensGenerated: number) => void;
 }
 
 export interface LlmAdapter {
