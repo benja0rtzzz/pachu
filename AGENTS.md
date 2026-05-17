@@ -97,7 +97,7 @@ something's wrong before you write any code.
 - [x] Expo app: home screen polls `/health`, shows backend + LLM status
 
 ### Person A — Engine / Backend
-- [ ] `backend/src/store/` — `bun:sqlite` schema + repos (notes, terms, reviews, sessions)
+- [x] `backend/src/store/` — `bun:sqlite` schema + repos (`notes`, `terms` rows include serialized `ts-fsrs` card JSON; reviews, sessions)
 - [ ] `backend/src/memory/fsrs.ts` — wrap `ts-fsrs`, expose `review`, `due`, `card` helpers
 - [ ] `backend/src/memory/termPicker.ts` — pick N due/weak/new terms for a session
 - [ ] `backend/src/memory/stabilityRouter.ts` — per-term `anchored | generated` decision
@@ -140,6 +140,7 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
+- **2026-05-16 — FSRS state on the `terms` row** — Serialized `ts-fsrs` `Card` is stored in `terms.fsrs_card_json` (plus `fsrs_card_updated_at`), not a separate table; one DB row per term for scheduling and content.
 - **2026-05-16 — Default LLM is `gemma4:26b`** (MoE, 18GB on disk, ~3.8B active params).
   Faster than dense 31B at near-equal quality, native function calling + system prompts,
   256K context (no chunker needed for term extraction), strong multilingual.
