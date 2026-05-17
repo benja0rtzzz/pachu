@@ -11,6 +11,7 @@
   "scripts": {
     "dev:backend": "bun run --filter @pachu/backend dev",
     "dev:app": "bun run --filter @pachu/app start",
+    "dev:app:web": "bun run --filter @pachu/app web",
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "echo 'no lint configured yet'",
