@@ -9,7 +9,7 @@
     "start": "bun run src/server.ts",
     "build": "tsc -p .",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --max-concurrency 1"
+    "test": "bun test --preload ./tests/setup.ts --max-concurrency 1"
   },
   "dependencies": {
     "@pachu/shared": "*",

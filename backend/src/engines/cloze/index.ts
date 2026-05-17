@@ -23,6 +23,7 @@ import { generateClozeSentence } from '../../llm/prompts/clozeSentence.js';
 import { clozeModeForTerm, type ClozeMode } from '../../memory/stabilityRouter.js';
 import type { PuzzleEngine } from '../types.js';
 import { buildAnchoredCloze } from './anchored.js';
+import { extractSourceChunk } from './splitter.js';
 
 export interface ClozeEngineInput {
   spaceId: string;
@@ -45,7 +46,9 @@ async function buildClozeItem(
       const gen = await generateClozeSentence({
         llm,
         term: term.term,
-        sourceChunk: rawText,
+        // Use a windowed chunk around the sourceSpan so the grounding verifier
+        // isn't swamped by an entire notes file and the LLM gets focused context.
+        sourceChunk: extractSourceChunk(rawText, term.sourceSpan),
         styleAnchor: term.styleAnchor,
         maskToken: MASK_TOKEN,
       });
