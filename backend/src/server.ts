@@ -28,7 +28,7 @@ async function main() {
   });
 
   const server = http.createServer(app);
-  attachCoachWs({ server, path: '/coach' });
+  attachCoachWs({ server, path: '/coach', llm });
 
   server.listen(config.port, config.host, () => {
     const reachable = `http://${config.host === '0.0.0.0' ? 'localhost' : config.host}:${config.port}`;

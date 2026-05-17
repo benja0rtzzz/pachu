@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { CoachClientMessage, CoachEvent } from '@pachu/shared';
+import type { LlmAdapter } from '../llm/adapter.js';
+import { generateCoachHints, computeStructuralHint } from '../llm/prompts/coach.js';
+import { getTermById } from '../store/repos/terms.js';
 
-/**
- * Minimal /coach WS endpoint. Accepts ping/mistake/hint_request messages and echoes structured
- * events. Real coaching logic (LLM hint generation, mistake reasoning) will plug in here later.
- */
 export function attachCoachWs(opts: {
   server: import('node:http').Server;
+  llm: LlmAdapter;
   path?: string;
 }): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
@@ -23,6 +23,9 @@ export function attachCoachWs(opts: {
 
   wss.on('connection', (ws: WebSocket) => {
     const sessionId = randomUUID();
+    // Track the most recent mistake observation per term so tier-1 nudges have context.
+    const observations = new Map<string, string>();
+
     send(ws, { type: 'hello', sessionId });
 
     ws.on('message', (raw) => {
@@ -32,20 +35,59 @@ export function attachCoachWs(opts: {
       } catch {
         return;
       }
+
       if (msg.type === 'ping') {
         send(ws, { type: 'pong' });
-      } else if (msg.type === 'hint_request') {
-        send(ws, {
-          type: 'hint',
-          termId: msg.termId,
-          tier: msg.tier,
-          text: '(coach not yet wired to LLM — this is a placeholder hint)',
-        });
+        return;
+      }
+
+      if (msg.type === 'mistake') {
+        observations.set(msg.termId, msg.observation);
+        return;
+      }
+
+      if (msg.type === 'hint_request') {
+        void handleHintRequest(ws, opts.llm, msg.termId, msg.tier, observations.get(msg.termId));
       }
     });
   });
 
   return wss;
+}
+
+async function handleHintRequest(
+  ws: WebSocket,
+  llm: LlmAdapter,
+  termId: string,
+  tier: 1 | 2 | 3,
+  observation: string | undefined,
+): Promise<void> {
+  const term = getTermById(termId);
+  if (!term) return;
+
+  let text: string;
+
+  if (tier === 1) {
+    try {
+      const hints = await generateCoachHints({
+        llm,
+        term: term.term,
+        definition: term.definition,
+        styleAnchor: term.styleAnchor,
+        observation,
+      });
+      text = hints.tier1;
+    } catch {
+      // LLM unavailable — fall back to the deterministic structural hint.
+      text = computeStructuralHint(term.term);
+    }
+  } else if (tier === 2) {
+    text = computeStructuralHint(term.term);
+  } else {
+    text = term.definition;
+  }
+
+  send(ws, { type: 'hint', termId, tier, text });
 }
 
 function send(ws: WebSocket, ev: CoachEvent) {

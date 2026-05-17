@@ -69,6 +69,34 @@ export function listTermsByNotesFile(notesFileId: string): Term[] {
   }));
 }
 
+export function getTermById(id: string): Term | null {
+  const db = getDatabase();
+  const row = db
+    .query(
+      `SELECT id, notes_file_id, term, definition, source_span, style_anchor
+       FROM terms WHERE id = ?`,
+    )
+    .get(id) as {
+    id: string;
+    notes_file_id: string;
+    term: string;
+    definition: string;
+    source_span: string;
+    style_anchor: string;
+  } | null;
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    notesFileId: row.notes_file_id,
+    term: row.term,
+    definition: row.definition,
+    sourceSpan: row.source_span,
+    styleAnchor: row.style_anchor,
+  };
+}
+
 export function getFsrsCardJson(termId: string): string | null {
   const db = getDatabase();
   const row = db
