@@ -3,6 +3,8 @@ import express from 'express';
 import { config } from './config.js';
 import { OllamaAdapter } from './llm/ollama.js';
 import { healthRouter } from './routes/health.js';
+import { notesRouter } from './routes/notes.js';
+import { spacesRouter } from './routes/spaces.js';
 import { openDatabase } from './store/db.js';
 import { attachCoachWs } from './ws/coach.js';
 
@@ -15,16 +17,21 @@ async function main() {
   app.use(express.json({ limit: '2mb' }));
   app.use((_req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'content-type');
     next();
   });
   app.options('*', (_req, res) => res.sendStatus(204));
 
   app.use('/health', healthRouter({ llm, startedAt }));
+  app.use('/notes', notesRouter());
+  app.use('/spaces', spacesRouter());
 
   app.get('/', (_req, res) => {
-    res.json({ service: 'pachu-backend', try: ['/health', '/coach (WS)'] });
+    res.json({
+      service: 'pachu-backend',
+      try: ['/health', '/spaces', '/notes/ingest', '/coach (WS)'],
+    });
   });
 
   const server = http.createServer(app);

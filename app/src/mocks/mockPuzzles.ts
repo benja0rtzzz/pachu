@@ -1,8 +1,11 @@
 import type { ClozePuzzle, CrosswordPuzzle, FlashcardsPuzzle } from '@pachu/shared';
 
+const MOCK_SPACE_ID = 'mock-space-1';
+
 export const MOCK_CROSSWORD: CrosswordPuzzle = {
   kind: 'crossword',
   id: 'mock-crossword-1',
+  spaceId: MOCK_SPACE_ID,
   width: 7,
   height: 7,
   entries: [
@@ -36,6 +39,7 @@ export const MOCK_CROSSWORD: CrosswordPuzzle = {
 export const MOCK_CLOZE: ClozePuzzle = {
   kind: 'cloze',
   id: 'mock-cloze-1',
+  spaceId: MOCK_SPACE_ID,
   items: [
     {
       termId: 't-stemi',
@@ -57,6 +61,7 @@ export const MOCK_CLOZE: ClozePuzzle = {
 export const MOCK_FLASHCARDS: FlashcardsPuzzle = {
   kind: 'flashcards',
   id: 'mock-flash-1',
+  spaceId: MOCK_SPACE_ID,
   items: [
     {
       termId: 't-ratio',

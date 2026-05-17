@@ -1,7 +1,8 @@
 # Puzzle Forge Coach — Architecture Plan
 
 > The "what and why" of the system. For day-to-day team coordination, conventions, and the
-> live progress board, see [`AGENTS.md`](../AGENTS.md) at the repo root.
+> live progress board, see [`AGENTS.md`](../AGENTS.md) at the repo root. For the live HTTP
+> + WS surface (what's actually wired today, request/response shapes), see [`API.md`](API.md).
 
 A React Native + Expo app backed by a Node/TypeScript orchestrator that embeds existing
 libraries (`crossword-layout-generator`, `ts-fsrs`) plus an in-house Cloze engine, all

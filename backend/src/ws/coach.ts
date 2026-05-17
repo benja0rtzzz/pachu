@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { CoachClientMessage, CoachEvent } from '@pachu/shared';
+import type { CoachClientMessage, CoachEvent, Hint } from '@pachu/shared';
 import type { LlmAdapter } from '../llm/adapter.js';
 import { generateCoachHints, computeStructuralHint } from '../llm/prompts/coach.js';
 import { getTermById } from '../store/repos/terms.js';
@@ -66,6 +66,7 @@ async function handleHintRequest(
   if (!term) return;
 
   let text: string;
+  let kind: Hint['kind'];
 
   if (tier === 1) {
     try {
@@ -77,17 +78,21 @@ async function handleHintRequest(
         observation,
       });
       text = hints.tier1;
+      kind = 'nudge';
     } catch {
       // LLM unavailable — fall back to the deterministic structural hint.
       text = computeStructuralHint(term.term);
+      kind = 'pattern';
     }
   } else if (tier === 2) {
     text = computeStructuralHint(term.term);
+    kind = 'pattern';
   } else {
     text = term.definition;
+    kind = 'definition';
   }
 
-  send(ws, { type: 'hint', termId, tier, text });
+  send(ws, { type: 'hint', hint: { termId, tier, kind, text } });
 }
 
 function send(ws: WebSocket, ev: CoachEvent) {

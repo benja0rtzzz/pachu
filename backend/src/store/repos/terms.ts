@@ -113,3 +113,30 @@ export function upsertFsrsCardJson(termId: string, cardJson: string): void {
     [cardJson, updatedAt, termId],
   );
 }
+
+/**
+ * Total term count for a notes file. Cheaper than `listTermsByNotesFile(...).length`
+ * because it doesn't materialize the rows. Used by `SpaceSummary`.
+ */
+export function countTermsByNotesFile(notesFileId: string): number {
+  const db = getDatabase();
+  const row = db
+    .query('SELECT COUNT(*) AS n FROM terms WHERE notes_file_id = ?')
+    .get(notesFileId) as { n: number } | null;
+  return row?.n ?? 0;
+}
+
+/**
+ * All FSRS card JSON blobs for a notes file, paired with their term id. `card_json` is
+ * NULL for terms that have never been reviewed. Used by `SpaceSummary` to compute
+ * dueCount / newCount / stableCount / dueToday in one pass without per-term round-trips.
+ */
+export function listFsrsCardsByNotesFile(
+  notesFileId: string,
+): Array<{ termId: string; cardJson: string | null }> {
+  const db = getDatabase();
+  const rows = db
+    .query('SELECT id, fsrs_card_json FROM terms WHERE notes_file_id = ?')
+    .all(notesFileId) as Array<{ id: string; fsrs_card_json: string | null }>;
+  return rows.map((r) => ({ termId: r.id, cardJson: r.fsrs_card_json }));
+}

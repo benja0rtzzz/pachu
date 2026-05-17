@@ -24,3 +24,19 @@ export function appendReviewEvent(input: {
   );
   return Number(result.lastInsertRowid);
 }
+
+/**
+ * ISO timestamp of the most recent review event for any term in a notes file (i.e. a
+ * Space), or null if the space has never been reviewed. Source for `SpaceSummary.lastReviewedAt`.
+ */
+export function getLastReviewedAt(notesFileId: string): string | null {
+  const db = getDatabase();
+  const row = db
+    .query(
+      `SELECT MAX(r.created_at) AS at FROM review_events r
+       JOIN terms t ON t.id = r.term_id
+       WHERE t.notes_file_id = ?`,
+    )
+    .get(notesFileId) as { at: string | null } | null;
+  return row?.at ?? null;
+}

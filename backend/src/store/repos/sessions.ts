@@ -24,3 +24,59 @@ export function endSession(sessionId: string): void {
     sessionId,
   ]);
 }
+
+/**
+ * Most recent ended session for a notes file (i.e. a Space), or null if none exists.
+ * `SpaceSummary.lastPuzzleKind` is sourced from this.
+ */
+export function getLastEndedSession(
+  notesFileId: string,
+): { endedAt: string; puzzleKind: PuzzleKind } | null {
+  const db = getDatabase();
+  const row = db
+    .query(
+      `SELECT ended_at, puzzle_kind FROM sessions
+       WHERE notes_file_id = ? AND ended_at IS NOT NULL
+       ORDER BY ended_at DESC LIMIT 1`,
+    )
+    .get(notesFileId) as { ended_at: string; puzzle_kind: PuzzleKind } | null;
+  if (!row) return null;
+  return { endedAt: row.ended_at, puzzleKind: row.puzzle_kind };
+}
+
+/**
+ * Distinct puzzle kinds that have an ended session in `[from, to)` for a notes file.
+ * Used by `SpaceSummary.playedTodayKinds` (caller supplies today's local boundaries).
+ */
+export function listEndedKindsBetween(
+  notesFileId: string,
+  fromIso: string,
+  toIso: string,
+): PuzzleKind[] {
+  const db = getDatabase();
+  const rows = db
+    .query(
+      `SELECT DISTINCT puzzle_kind FROM sessions
+       WHERE notes_file_id = ? AND ended_at IS NOT NULL
+         AND ended_at >= ? AND ended_at < ?`,
+    )
+    .all(notesFileId, fromIso, toIso) as Array<{ puzzle_kind: PuzzleKind }>;
+  return rows.map((r) => r.puzzle_kind);
+}
+
+/**
+ * Distinct local-time calendar dates (YYYY-MM-DD) on which this notes file had at least
+ * one ended session, sorted descending (newest first). Used by `SpaceSummary.streakDays`.
+ * Server local time matches what the user sees in the UI.
+ */
+export function listEndedSessionLocalDates(notesFileId: string): string[] {
+  const db = getDatabase();
+  const rows = db
+    .query(
+      `SELECT DISTINCT date(ended_at, 'localtime') AS d FROM sessions
+       WHERE notes_file_id = ? AND ended_at IS NOT NULL
+       ORDER BY d DESC`,
+    )
+    .all(notesFileId) as Array<{ d: string }>;
+  return rows.map((r) => r.d);
+}
