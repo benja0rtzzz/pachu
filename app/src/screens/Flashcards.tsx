@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
   interpolate,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -23,11 +24,10 @@ interface FlashProgress {
 }
 import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
 
-// Flip duration, plus the settle delay before the next card's content is
-// swapped in. Swapping earlier than the flip-back completes briefly exposes
-// the *next* card's answer through the still-rotating face.
 const FLIP_MS = 560;
-const NEXT_CARD_DELAY_MS = FLIP_MS + 40;
+// Cross-fade between cards. The flip is reset instantly while the card is
+// invisible, so no rotation exposes the next card's answer.
+const FADE_MS = 150;
 
 const GRADES: { rating: Rating; label: string; tone: 'subtle' | 'accent-bg' | 'accent' }[] = [
   { rating: 1, label: 'Again', tone: 'subtle' },
@@ -73,6 +73,7 @@ export function FlashcardsScreen() {
   const [finishError, setFinishError] = useState<string | null>(null);
 
   const flip = useSharedValue(0);
+  const cardOpacity = useSharedValue(1);
 
   useEffect(() => {
     flip.value = withTiming(flipped ? 1 : 0, {
@@ -118,6 +119,7 @@ export function FlashcardsScreen() {
       { rotateY: `${interpolate(flip.value, [0, 1], [180, 360])}deg` },
     ],
   }));
+  const fadeStyle = useAnimatedStyle(() => ({ opacity: cardOpacity.value }));
 
   // Summary first: finishing the session clears `activePuzzle`, which would
   // otherwise fall through to the "No flashcards loaded" guard below.
@@ -157,6 +159,15 @@ export function FlashcardsScreen() {
   const card = puzzle.items[index]!;
   const isLast = index >= puzzle.items.length - 1;
 
+  const advanceCard = () => {
+    // Reset the flip with no rotation so the back (answer) never shows; the
+    // card is invisible at this point, so the swap is seamless.
+    flip.value = 0;
+    setFlipped(false);
+    setIndex((i) => i + 1);
+    cardOpacity.value = withTiming(1, { duration: FADE_MS });
+  };
+
   const grade = async (rating: Rating) => {
     const ms = Math.max(0, Date.now() - cardShownAt);
     reviewsRef.current.push({ termId: card.termId, rating, ms, hintsUsed: 0 });
@@ -166,10 +177,9 @@ export function FlashcardsScreen() {
         index: index + 1,
         reviews: reviewsRef.current,
       } satisfies FlashProgress);
-      setFlipped(false);
-      // Wait for the flip-back to fully complete before swapping in the next
-      // card — otherwise the next answer flashes through the rotating face.
-      setTimeout(() => setIndex((i) => i + 1), NEXT_CARD_DELAY_MS);
+      cardOpacity.value = withTiming(0, { duration: FADE_MS }, (finished) => {
+        if (finished) runOnJS(advanceCard)();
+      });
       return;
     }
 
@@ -209,7 +219,7 @@ export function FlashcardsScreen() {
 
       <View style={styles.cardArea}>
         <Pressable onPress={() => setFlipped((f) => !f)} style={styles.cardPerspective}>
-          <Animated.View style={[styles.cardFace, styles.cardFront, frontStyle]}>
+          <Animated.View style={[styles.cardFace, styles.cardFront, frontStyle, fadeStyle]}>
             <Text style={styles.cardTag}>Flashcard</Text>
             <View style={styles.cardCenter}>
               <Text
@@ -225,7 +235,7 @@ export function FlashcardsScreen() {
               <Text style={styles.cardHintText}>Tap to flip</Text>
             </View>
           </Animated.View>
-          <Animated.View style={[styles.cardFace, styles.cardBack, backStyle]}>
+          <Animated.View style={[styles.cardFace, styles.cardBack, backStyle, fadeStyle]}>
             <Text style={[styles.cardTag, styles.cardTagInverse]}>Flashcard</Text>
             <View style={styles.cardCenter}>
               <Text
