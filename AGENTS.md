@@ -10,7 +10,7 @@
 
 A React Native + Expo app backed by a Node/TypeScript orchestrator that embeds existing
 libraries (`crossword-layout-generator`, `ts-fsrs`) plus an in-house Cloze engine, all
-driven by a **local LLM (Ollama, default `gemma4:26b`)**. The user provides their own notes;
+driven by a **local LLM (Ollama, default `gemma4:e2b`)**. The user provides their own notes;
 the system extracts terms, schedules them with FSRS, and generates puzzles whose register
 mimics the source notes.
 
@@ -50,14 +50,20 @@ The only true cross-team coupling is `shared/types.ts`. Touch it carefully.
 
 ## How to run
 
-Prerequisites: **Bun ≥ 1.1**, **Ollama** (`ollama serve` running, model pulled with
-`ollama pull gemma4:26b`), iOS Simulator or Expo Go.
+Prerequisites: **Bun ≥ 1.1**, **Ollama** (`ollama serve` running with a model pulled —
+see `backend/.env.example` for tested options), iOS Simulator or Expo Go.
 
 ```bash
 bun install
-bun run dev:backend     # http://localhost:4000  (Express + WS at /coach)
-bun run dev:app         # press i for iOS sim, w for web
+cp .env.example .env                   # at repo root; edit OLLAMA_MODEL etc.
+bun run dev:backend                    # http://localhost:4000  (Express + WS at /coach)
+bun run dev:app                        # press i for iOS sim, w for web
 ```
+
+All LLM-related configuration (model, base URL, timeout) is read from `.env` at the
+repo root. There are no hardcoded model tags in the code; missing env vars throw a
+clear error. The backend's config loader walks up from its source dir to find the root
+.env, so it works from any cwd.
 
 The app's home screen pings `/health` every 5s and shows backend + LLM status. If it's red,
 something's wrong before you write any code.
@@ -92,9 +98,11 @@ something's wrong before you write any code.
 ### Done
 - [x] Monorepo scaffold (workspaces: shared, backend, app)
 - [x] Backend: Express + ws skeleton, `/health` endpoint, `/coach` WS placeholder
-- [x] LLM adapter interface + Ollama implementation (gemma4:26b sampling defaults)
+- [x] LLM adapter interface + Ollama implementation (gemma4 sampling defaults)
 - [x] Shared types: `Term`, `Puzzle` union, `HealthResponse`, `CoachEvent`
 - [x] Expo app: home screen polls `/health`, shows backend + LLM status
+- [x] Person B vertical complete: anti-hallucination verifiers, all four LLM prompts,
+      demo notes for three registers, 25 unit tests + 5 live LLM smoke tests
 
 ### Person A — Engine / Backend
 - [x] `backend/src/store/` — `bun:sqlite` schema + repos (`notes`, `terms` rows include serialized `ts-fsrs` card JSON; reviews, sessions)
@@ -108,14 +116,23 @@ something's wrong before you write any code.
 - [ ] `backend/src/engines/cloze/` — sentence splitter, anchored, generated, verifier
 
 ### Person B — LLM / Content
-- [ ] `backend/src/llm/prompts/extractTerms.ts` — JSON-mode prompt + source-span verifier
-- [ ] `backend/src/llm/prompts/clozeSentence.ts` — generated mode w/ styleAnchor mimicry
-- [ ] `backend/src/llm/prompts/clueStylist.ts` — crossword clue, mimicking styleAnchor
-- [ ] `backend/src/llm/prompts/coach.ts` — tiered hint generation
-- [ ] `backend/tests/` — `bun test` fixtures: snapshot prompts, verify schema, sanity checks
-- [ ] `docs/demo-notes/japanese-101.md`
-- [ ] `docs/demo-notes/calc-2.md`
-- [ ] `docs/demo-notes/cardio-clinical.md`
+- [x] `backend/src/llm/verify/spanCheck.ts` — span verifier (anti-hallucination tier 1)
+- [x] `backend/src/llm/verify/grounding.ts` — entity-extracting grounding verifier (tier 2)
+- [x] `backend/src/llm/prompts/extractTerms.ts` — JSON-mode prompt + verified candidate output
+- [x] `backend/src/llm/prompts/clozeSentence.ts` — styleAnchor mimicry + grounding fallback
+- [x] `backend/src/llm/prompts/clueStylist.ts` — crossword clue mimicking styleAnchor
+- [x] `backend/src/llm/prompts/coach.ts` — tiered hints (LLM nudge + deterministic pattern + definition)
+- [x] `backend/tests/spanCheck.test.ts` — 10 unit tests, all green
+- [x] `backend/tests/grounding.test.ts` — 10 unit tests, all green
+- [x] `backend/tests/coach.test.ts` — 5 unit tests for the deterministic structural hint
+- [x] `backend/tests/extractTerms.live.test.ts` — live LLM smoke test (opt-in via `LLM_LIVE=1`)
+- [x] `backend/tests/clozeSentence.live.test.ts` — live LLM smoke test (opt-in via `LLM_LIVE=1`)
+- [x] `docs/demo-notes/japanese-101.md` — casual learning register
+- [x] `docs/demo-notes/calc-2.md` — formal academic register
+- [x] `docs/demo-notes/cardio-clinical.md` — terse clinical register
+- [x] `docs/demo-notes/history-cold-war.md` — proper-noun + date stress for grounding verifier
+- [x] `docs/demo-notes/typescript-generics.md` — code blocks + jargon
+- [x] `docs/demo-notes/solar-system-kids.md` — kid-simple register
 
 ### Person C — App / UX
 - [ ] Theme tokens (extract from `App.tsx`) + `app/src/theme.ts`
@@ -140,10 +157,28 @@ something's wrong before you write any code.
 
 > Append-only. Short. The *why*, not the what. Newest at top.
 
-- **2026-05-16 — FSRS state on the `terms` row** — Serialized `ts-fsrs` `Card` is stored in `terms.fsrs_card_json` (plus `fsrs_card_updated_at`), not a separate table; one DB row per term for scheduling and content.
-- **2026-05-16 — Default LLM is `gemma4:26b`** (MoE, 18GB on disk, ~3.8B active params).
-  Faster than dense 31B at near-equal quality, native function calling + system prompts,
-  256K context (no chunker needed for term extraction), strong multilingual.
+- **2026-05-16 — Prompt revamp + corpus expansion.** All four LLM prompts (extract,
+  cloze, clue, coach) now include contrastive good/bad examples inline. Small models
+  like `gemma4:e2b` follow contrastive demonstrations more reliably than abstract rules.
+  Demo corpus grew from 3 → 6 notes (added Cold War history, TypeScript generics,
+  solar-system-for-kids) to stress proper-noun density, code blocks, and the low end of
+  the register spectrum. The live extract test runs all 6 parametrically; filter via
+  `bun test -t <name>`.
+- **2026-05-16 — All LLM config is env-first, loaded from repo root.** Model tag,
+  Ollama URL, and timeout live in `<repo-root>/.env` (template in `.env.example`).
+  `backend/src/env.ts` walks up to find the monorepo root and loads that .env into
+  process.env regardless of cwd, so `bun test` from anywhere just works. Code has no
+  hardcoded model strings; `OllamaAdapter` throws a clear error if env is missing.
+- **2026-05-16 — Default LLM locked to `gemma4:e2b`** (7.2GB, 128K context, Effective 2B).
+  After live testing both e4b and qwen3.5:9b, e2b proved fast enough for the live demo
+  loop and the prompt-engineering work compensates for the smaller model's lower ceiling.
+  Larger gemma4 models (26b MoE) produced empty content under `format: 'json'` and were
+  too slow on M4 Pro for live demo (~86s/call).
+- **2026-05-16 — Drop Ollama's `format: 'json'` constraint.** Forcing strict JSON mode
+  on gemma4 conflicts with its channel/thinking tokens and causes empty responses. We
+  ask for JSON in the prompt and our parsers handle fenced or raw JSON output.
+- **2026-05-16 — Sampling defaults follow gemma4 spec** (temperature=1.0, top_p=0.95,
+  top_k=64). Lower temperatures empirically cause gemma4 to collapse to empty output.
 - **2026-05-16 — Bun, not npm.** Native TS, faster install, `bun:sqlite` is built-in
   (no `better-sqlite3` native build). Replaces both runtime and package manager.
 - **2026-05-16 — No personas, no difficulty knob.** Register inherited from notes via

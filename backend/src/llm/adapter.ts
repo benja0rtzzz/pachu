@@ -10,10 +10,8 @@ export interface ChatMessage {
 export interface ChatOptions {
   /** Approximate max tokens for the response. */
   maxTokens?: number;
-  /** Sampling temperature. */
+  /** Sampling temperature. Defaults to 1.0 (gemma4 spec). */
   temperature?: number;
-  /** If provided, the adapter will instruct the model to respond with JSON of this rough shape. */
-  jsonHint?: string;
 }
 
 export interface LlmAdapter {

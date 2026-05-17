@@ -20,15 +20,16 @@ pachu/
 ## Prerequisites
 
 - [Bun](https://bun.sh/) 1.1+ (used as the package manager and runtime — runs `.ts` natively, has built-in SQLite)
-- [Ollama](https://ollama.com/) running locally (`ollama serve`); default model: `gemma4:26b` (18GB; pull with `ollama pull gemma4:26b`)
+- [Ollama](https://ollama.com/) running locally (`ollama serve`); model is configurable via `backend/.env` (see `backend/.env.example` for options and notes)
 - iOS Simulator or Expo Go on a phone (same Wi-Fi as the dev laptop)
 
 ## Quick start
 
 ```bash
 bun install
-bun run dev:backend   # in one terminal
-bun run dev:app       # in another
+cp .env.example .env                   # edit to set OLLAMA_MODEL, etc.
+bun run dev:backend                    # one terminal
+bun run dev:app                        # another terminal
 ```
 
 Backend listens on `http://localhost:4000`. The Expo app reads `EXPO_PUBLIC_API_BASE_URL` (defaults to `http://localhost:4000`).
