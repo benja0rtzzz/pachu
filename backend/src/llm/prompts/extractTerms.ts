@@ -20,6 +20,8 @@ export interface ExtractTermsOptions {
   maxTerms?: number;
   /** Progress callback fired during candidate verification (1-based current). */
   onVerifyProgress?: (current: number, total: number) => void;
+  /** Progress callback fired as the model streams, with running token count. */
+  onModelProgress?: (tokens: number) => void;
 }
 
 export interface RejectedCandidate {
@@ -206,7 +208,7 @@ export async function extractTerms(opts: ExtractTermsOptions): Promise<ExtractTe
     ],
     // ~34 terms × 4 fields (with verbatim sentences) overruns 4096 and the
     // JSON truncates; give it real headroom (salvageObjects covers the rest).
-    { maxTokens: 12288 }
+    { maxTokens: 12288, onProgress: opts.onModelProgress }
   );
 
   const candidates = parseCandidates(raw);

@@ -249,7 +249,8 @@ export type CoachClientMessage =
  *
  * Stages, in order:
  *   - `preparing`   : looking up the stored notes
- *   - `calling-model`: the LLM call is in flight (indeterminate; the slow part)
+ *   - `calling-model`: the LLM call is in flight; `current` carries the running
+ *                      streamed token count (the slow part)
  *   - `verifying`   : span/grounding checks, `current`/`total` populated
  *   - `persisting`  : writing accepted terms
  * Terminates with `done` (refreshed Space + counts) or `error` (HTTP-equivalent
