@@ -309,6 +309,35 @@ export function ClozeScreen() {
     } satisfies ClozeProgress);
   };
 
+  // Snapshot on unmount so a plain "back" (typed into the blank but no Submit
+  // yet) survives. Reading from refs in the cleanup avoids the stale-closure
+  // trap and the cancelled-timer trap the old debounced autosave fell into.
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const itemRef = useRef(item);
+  itemRef.current = item;
+  useEffect(() => {
+    return () => {
+      if (!puzzleId || !readyRef.current) return;
+      const it = itemRef.current;
+      if (!it) return;
+      const itemStates: Record<string, PerItemState> = {};
+      itemStatesRef.current.forEach((v, k) => {
+        itemStates[k] = v;
+      });
+      itemStates[it.termId] = stateRef.current;
+      void savePuzzleProgress(puzzleId, {
+        index: indexRef.current,
+        itemStates,
+        drafts: { [it.termId]: draftRef.current },
+      } satisfies ClozeProgress);
+    };
+  }, [puzzleId]);
+
   // Summary first: finishing the session clears `activePuzzle`, which would
   // otherwise fall through to the "No cloze items loaded" guard below.
   if (summary) {

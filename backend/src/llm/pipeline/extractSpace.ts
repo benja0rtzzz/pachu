@@ -53,10 +53,19 @@ export async function runSpaceExtraction(
   let rejectedCount: number;
   try {
     emit({ stage: 'calling-model' });
+    // Throttle token ticks: the model streams hundreds of tokens and one WS
+    // frame per token would flood the socket. Emit every 16th token instead —
+    // enough to keep the bar visibly moving without spamming.
+    let lastTick = 0;
     const result = await extractTerms({
       llm: opts.llm,
       notes: note.rawText,
       maxTerms: opts.maxTerms,
+      onModelProgress: (tokens) => {
+        if (tokens - lastTick < 16) return;
+        lastTick = tokens;
+        emit({ stage: 'calling-model', current: tokens });
+      },
       onVerifyProgress: (current, total) =>
         emit({ stage: 'verifying', current, total }),
     });
