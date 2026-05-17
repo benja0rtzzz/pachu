@@ -5,6 +5,7 @@ import { FlashcardsScreen } from '../screens/Flashcards';
 import { LandingScreen } from '../screens/Landing';
 import { NotesImportScreen } from '../screens/NotesImport';
 import { PuzzlePickerScreen } from '../screens/PuzzlePicker';
+import { SpacesScreen } from '../screens/Spaces';
 
 export function RootNavigator() {
   const { route } = useNavigation();
@@ -14,8 +15,10 @@ export function RootNavigator() {
       return <LandingScreen />;
     case 'import':
       return <NotesImportScreen />;
-    case 'picker':
-      return <PuzzlePickerScreen />;
+    case 'spaces':
+      return <SpacesScreen />;
+    case 'space':
+      return <PuzzlePickerScreen spaceId={route.spaceId} />;
     case 'crossword':
       return <CrosswordScreen />;
     case 'cloze':

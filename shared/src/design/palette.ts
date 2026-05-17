@@ -1,33 +1,32 @@
 /**
- * Pachu brand palette — single source of truth for color.
+ * Pachu brand palette — Puzzle Forge Coach scheme.
  *
- * Tokens are named by what they ARE (pigment), not what they DO (role).
- * Semantic role assignment lives in consumers (e.g. `app/src/theme.ts`).
- * Never inline a hex code in a consumer; add a token here and reference it.
+ * Tokens are named by what they ARE (pigment / opacity step), not what they
+ * DO (role). Semantic role assignment lives in `app/src/theme.ts`. Never
+ * inline a hex code in a consumer; add a token here and reference it.
  *
- * Scale runs from `void` (darkest) up to `bone` (warm near-white):
- *   void < ink < shadow < plum < wine < mulberry < mauve < stone < bone
+ * The scheme is cool: a single electric blue accent (`blue`) over a near-black
+ * ink (`ink`) on white (`surface`), with a six-step rgba ladder of ink for
+ * text, borders, fills, and overlays. `hairline` is the canonical 1px divider
+ * color. `sage` stays as the off-palette success green (no green in the
+ * brand otherwise).
  */
 export const palette = {
-  // Brand — the six core pigments
-  rust: '#b10804',
-  ember: '#fb4007',
-  amber: '#f68f41',
-  mauve: '#8e525c',
-  stone: '#ac9e9c',
-  plum: '#4b2e3e',
+  blue: '#0068ff',
+  ink: '#0B0F19',
 
-  // Derived warm-dark scale (kept in the plum family for cohesion)
-  void: '#0f0608',
-  ink: '#1a0e12',
-  shadow: '#2a1a22',
-  wine: '#5a3a48',
-  mulberry: '#6b3d4a',
-  bone: '#faf3f0',
+  // Ink opacity ladder — use these for text tiers, borders, fills.
+  ink70: 'rgba(11,15,25,0.70)',
+  ink55: 'rgba(11,15,25,0.55)',
+  ink40: 'rgba(11,15,25,0.40)',
+  ink25: 'rgba(11,15,25,0.25)',
+  ink10: 'rgba(11,15,25,0.10)',
+  ink06: 'rgba(11,15,25,0.06)',
+
+  surface: '#FFFFFF',
+  hairline: 'rgba(11,15,25,0.08)',
 
   // Off-palette — semantic green for success/correct feedback.
-  // The brand palette has no green; a desaturated sage keeps the warm
-  // tone without clashing.
   sage: '#7fb069',
 } as const;
 

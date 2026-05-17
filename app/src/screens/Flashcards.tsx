@@ -1,96 +1,441 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { Rating } from '@pachu/shared';
-import { PrimaryButton } from '../components/PrimaryButton';
-import { Screen } from '../components/Screen';
+import Animated, {
+  Easing,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { Rating, Review, SessionFinishResponse } from '@pachu/shared';
+import { ProgressBar } from '../components/ProgressBar';
+import { PuzzleShell } from '../components/PuzzleShell';
+import { SecondaryButton } from '../components/PrimaryButton';
 import { useNavigation } from '../navigation/NavigationContext';
-import { isFlashcardsPuzzle, useSession } from '../state/session';
-import { colors, sharedStyles, spacing, typography } from '../theme';
+import { isFlashcardsPuzzle, useSession, useSpaces } from '../state/session';
+import { colors, fonts, radii, shadows, spacing, typography } from '../theme';
 
-const RATINGS: { rating: Rating; label: string }[] = [
-  { rating: 1, label: 'Again' },
-  { rating: 2, label: 'Hard' },
-  { rating: 3, label: 'Good' },
-  { rating: 4, label: 'Easy' },
+const GRADES: { rating: Rating; label: string; tone: 'subtle' | 'accent-bg' | 'accent' }[] = [
+  { rating: 1, label: 'Again', tone: 'subtle' },
+  { rating: 2, label: 'Hard', tone: 'subtle' },
+  { rating: 3, label: 'Good', tone: 'accent-bg' },
+  { rating: 4, label: 'Easy', tone: 'accent' },
 ];
 
+function formatDueTime(iso?: string): string {
+  if (!iso) return 'no schedule yet';
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return iso;
+  const now = Date.now();
+  const diffMs = ts - now;
+  const day = 24 * 60 * 60 * 1000;
+  if (diffMs < 60 * 60 * 1000) return 'in under an hour';
+  if (diffMs < day) return 'later today';
+  if (diffMs < 2 * day) return 'tomorrow';
+  const days = Math.round(diffMs / day);
+  return `in ${days} days`;
+}
+
 export function FlashcardsScreen() {
+  const insets = useSafeAreaInsets();
   const { goBack, navigate } = useNavigation();
   const { activePuzzle } = useSession();
-  const puzzle = activePuzzle && isFlashcardsPuzzle(activePuzzle) ? activePuzzle : null;
+  const { activeSpace } = useSpaces();
+  const session = useSession();
+
+  const puzzle =
+    activePuzzle && isFlashcardsPuzzle(activePuzzle) ? activePuzzle : null;
+
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [cardShownAt, setCardShownAt] = useState<number>(() => Date.now());
+  const reviewsRef = useRef<Review[]>([]);
+  const [summary, setSummary] = useState<{
+    response: SessionFinishResponse | null;
+    counts: Record<Rating, number>;
+    total: number;
+    spaceTitle: string;
+  } | null>(null);
+  const [finishError, setFinishError] = useState<string | null>(null);
+
+  const flip = useSharedValue(0);
+
+  useEffect(() => {
+    flip.value = withTiming(flipped ? 1 : 0, {
+      duration: 550,
+      easing: Easing.bezier(0.4, 0, 0.2, 1),
+    });
+  }, [flip, flipped]);
+
+  useEffect(() => {
+    setCardShownAt(Date.now());
+  }, [index]);
+
+  const frontStyle = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: 1200 },
+      { rotateY: `${interpolate(flip.value, [0, 1], [0, 180])}deg` },
+    ],
+  }));
+  const backStyle = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: 1200 },
+      { rotateY: `${interpolate(flip.value, [0, 1], [180, 360])}deg` },
+    ],
+  }));
 
   if (!puzzle || puzzle.items.length === 0) {
     return (
-      <Screen title="Flashcards" onBack={goBack}>
-        <Text style={sharedStyles.screenSubtitle}>No puzzle loaded.</Text>
-        <PrimaryButton label="Back to picker" onPress={() => navigate({ name: 'picker' })} />
-      </Screen>
+      <PuzzleShell title="Flashcards" onBack={goBack} ditherIntensity="low">
+        <View style={styles.centerFill}>
+          <Text style={styles.errorTitle}>No flashcards loaded</Text>
+          <Text style={styles.errorBody}>
+            Generate a flashcards puzzle from a space to start reviewing.
+          </Text>
+          <SecondaryButton
+            label="Back to spaces"
+            onPress={() => navigate({ name: 'spaces' })}
+          />
+        </View>
+      </PuzzleShell>
     );
   }
 
   const card = puzzle.items[index]!;
   const isLast = index >= puzzle.items.length - 1;
 
-  const rate = (_rating: Rating) => {
-    setFlipped(false);
-    if (isLast) {
-      navigate({ name: 'picker' });
+  const grade = async (rating: Rating) => {
+    const ms = Math.max(0, Date.now() - cardShownAt);
+    reviewsRef.current.push({ termId: card.termId, rating, ms, hintsUsed: 0 });
+
+    if (!isLast) {
+      setFlipped(false);
+      // Reanimated swaps run before the index change registers; wait a frame
+      // so the card flips back cleanly before the next front renders.
+      setTimeout(() => setIndex((i) => i + 1), 80);
       return;
     }
-    setIndex((i) => i + 1);
+
+    setFlipped(false);
+    setFinishError(null);
+    const counts: Record<Rating, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    for (const r of reviewsRef.current) counts[r.rating] += 1;
+    const fallbackTitle = activeSpace?.title ?? 'this space';
+    try {
+      const response = await session.finishActivePuzzle(reviewsRef.current);
+      setSummary({
+        response,
+        counts,
+        total: reviewsRef.current.length,
+        spaceTitle: response?.space?.title ?? fallbackTitle,
+      });
+    } catch (err) {
+      setFinishError(`Couldn't save results — ${(err as Error).message}`);
+      setSummary({
+        response: null,
+        counts,
+        total: reviewsRef.current.length,
+        spaceTitle: fallbackTitle,
+      });
+    }
   };
 
-  return (
-    <Screen
-      title="Flashcards"
-      subtitle={`Card ${index + 1} of ${puzzle.items.length}`}
-      onBack={goBack}
-    >
-      <Pressable onPress={() => setFlipped((f) => !f)} style={[sharedStyles.card, styles.card]}>
-        <Text style={sharedStyles.label}>{flipped ? 'Back' : 'Front'}</Text>
-        <Text style={styles.cardText}>{flipped ? card.back : card.front}</Text>
-        <Text style={styles.tapHint}>Tap to flip</Text>
-      </Pressable>
-
-      {flipped ? (
-        <View style={styles.ratingRow}>
-          {RATINGS.map((r) => (
-            <PrimaryButton
-              key={r.rating}
-              label={r.label}
-              onPress={() => rate(r.rating)}
-              variant="secondary"
-            />
-          ))}
+  if (summary) {
+    const c = summary.counts;
+    const dueLine = formatDueTime(summary.response?.nextDueAt);
+    return (
+      <PuzzleShell title="Flashcards" onBack={goBack} ditherIntensity="low">
+        <View style={[styles.summaryWrap, { paddingBottom: spacing.xl + insets.bottom }]}>
+          <Text style={styles.summaryEyebrow}>Session complete</Text>
+          <Text style={styles.summaryHeadline}>
+            {summary.total} {summary.total === 1 ? 'card' : 'cards'} reviewed
+          </Text>
+          <Text style={styles.summaryBody}>
+            {c[3]} good · {c[2]} hard · {c[1]} again · {c[4]} easy
+          </Text>
+          <Text style={styles.summaryNext}>
+            Next due in <Text style={styles.summarySpace}>{summary.spaceTitle}</Text>: {dueLine}
+          </Text>
+          {finishError && <Text style={styles.errorBanner}>{finishError}</Text>}
+          <SecondaryButton
+            label="Back to space"
+            onPress={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
+            full
+          />
         </View>
-      ) : (
-        <PrimaryButton label="Show answer" onPress={() => setFlipped(true)} />
-      )}
-    </Screen>
+      </PuzzleShell>
+    );
+  }
+
+  return (
+    <PuzzleShell
+      title="Flashcards"
+      onBack={() => navigate({ name: 'space', spaceId: puzzle.spaceId })}
+      ditherIntensity="medium"
+    >
+      <View style={styles.progressWrap}>
+        <ProgressBar value={index + 1} max={puzzle.items.length} />
+      </View>
+
+      <View style={styles.cardArea}>
+        <Pressable onPress={() => setFlipped((f) => !f)} style={styles.cardPerspective}>
+          <Animated.View style={[styles.cardFace, styles.cardFront, frontStyle]}>
+            <Text style={styles.cardTag}>Flashcard</Text>
+            <View style={styles.cardCenter}>
+              <Text style={styles.cardFrontText}>{card.front}</Text>
+            </View>
+            <View style={styles.cardHintRow}>
+              <Text style={styles.cardHintText}>Tap to flip</Text>
+            </View>
+          </Animated.View>
+          <Animated.View style={[styles.cardFace, styles.cardBack, backStyle]}>
+            <Text style={[styles.cardTag, styles.cardTagInverse]}>Flashcard</Text>
+            <View style={styles.cardCenter}>
+              <Text style={styles.cardBackText}>{card.back}</Text>
+            </View>
+            <Text style={styles.cardHintInverse}>Rate your recall</Text>
+          </Animated.View>
+        </Pressable>
+      </View>
+
+      <View style={[styles.gradeRow, { paddingBottom: spacing.xl + insets.bottom }]}>
+        {!flipped ? (
+          <Pressable
+            onPress={() => setFlipped(true)}
+            style={styles.showAnswer}
+            accessibilityHint="Reveal the back of this card before grading"
+          >
+            <Text style={styles.showAnswerLabel}>Show answer</Text>
+          </Pressable>
+        ) : (
+          GRADES.map((g) => (
+            <Pressable
+              key={g.rating}
+              onPress={() => grade(g.rating)}
+              style={[
+                styles.gradeBtn,
+                g.tone === 'subtle' && styles.gradeSubtle,
+                g.tone === 'accent-bg' && styles.gradeAccentBg,
+                g.tone === 'accent' && styles.gradeAccent,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.gradeLabel,
+                  g.tone === 'accent' && styles.gradeLabelOnAccent,
+                  g.tone === 'accent-bg' && styles.gradeLabelAccent,
+                ]}
+              >
+                {g.label}
+              </Text>
+            </Pressable>
+          ))
+        )}
+      </View>
+    </PuzzleShell>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    minHeight: 200,
-    justifyContent: 'center',
+  centerFill: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
     gap: spacing.md,
   },
-  cardText: {
+  errorTitle: {
     color: colors.text,
-    fontSize: typography.heading,
+    fontFamily: fonts.display.semibold,
     fontWeight: '600',
-    textAlign: 'center',
-    lineHeight: 28,
+    fontSize: typography.title,
   },
-  tapHint: {
+  errorBody: {
     color: colors.muted,
+    fontFamily: fonts.ui.regular,
+    fontSize: typography.body,
+    textAlign: 'center',
+  },
+  progressWrap: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 18,
+  },
+  cardArea: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardPerspective: {
+    width: '100%',
+    maxWidth: 320,
+    height: 360,
+    position: 'relative',
+  },
+  cardFace: {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    borderRadius: radii.card,
+    padding: 26,
+    backfaceVisibility: 'hidden',
+  },
+  cardFront: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadows.hero,
+  },
+  cardBack: {
+    backgroundColor: colors.accent,
+    ...shadows.hero,
+  },
+  cardTag: {
+    color: colors.accent,
+    fontFamily: fonts.ui.bold,
+    fontWeight: '700',
+    fontSize: 10.5,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  cardTagInverse: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+  cardCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardFrontText: {
+    color: colors.text,
+    fontFamily: fonts.display.semibold,
+    fontWeight: '600',
+    fontSize: 34,
+    lineHeight: 38,
+    letterSpacing: -0.85,
+    textAlign: 'center',
+  },
+  cardBackText: {
+    color: colors.textOnAccent,
+    fontFamily: fonts.display.medium,
+    fontWeight: '500',
+    fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: -0.22,
+    textAlign: 'center',
+  },
+  cardHintRow: {
+    alignItems: 'center',
+  },
+  cardHintText: {
+    color: colors.subtle,
+    fontFamily: fonts.ui.regular,
     fontSize: typography.caption,
   },
-  ratingRow: {
-    gap: spacing.sm,
+  cardHintInverse: {
+    color: 'rgba(255,255,255,0.7)',
+    fontFamily: fonts.ui.regular,
+    fontSize: typography.caption,
+    textAlign: 'center',
+  },
+  gradeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  showAnswer: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+    backgroundColor: colors.accent,
+    ...shadows.button,
+  },
+  showAnswerLabel: {
+    color: colors.textOnAccent,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.body,
+  },
+  gradeBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gradeSubtle: {
+    backgroundColor: 'rgba(11,15,25,0.06)',
+  },
+  gradeAccentBg: {
+    backgroundColor: 'rgba(0,104,255,0.08)',
+  },
+  gradeAccent: {
+    backgroundColor: colors.accent,
+    ...shadows.pill,
+  },
+  gradeLabel: {
+    color: colors.text,
+    fontFamily: fonts.ui.semibold,
+    fontWeight: '600',
+    fontSize: typography.bodySm,
+  },
+  gradeLabelAccent: {
+    color: colors.accent,
+  },
+  gradeLabelOnAccent: {
+    color: colors.textOnAccent,
+  },
+  summaryWrap: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    gap: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryEyebrow: {
+    color: colors.accent,
+    fontFamily: fonts.ui.bold,
+    fontWeight: '700',
+    fontSize: 11,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  summaryHeadline: {
+    color: colors.text,
+    fontFamily: fonts.display.semibold,
+    fontWeight: '600',
+    fontSize: typography.title,
+    textAlign: 'center',
+  },
+  summaryBody: {
+    color: colors.muted,
+    fontFamily: fonts.ui.regular,
+    fontSize: typography.body,
+    textAlign: 'center',
+  },
+  summaryNext: {
+    color: colors.text,
+    fontFamily: fonts.ui.regular,
+    fontSize: typography.bodySm,
+    textAlign: 'center',
+  },
+  summarySpace: {
+    fontFamily: fonts.display.semibold,
+    fontWeight: '600',
+    fontStyle: 'italic',
+  },
+  errorBanner: {
+    color: colors.text,
+    backgroundColor: 'rgba(177,8,4,0.08)',
+    padding: spacing.sm,
+    borderRadius: radii.sm,
+    fontFamily: fonts.ui.medium,
+    fontSize: typography.caption,
+    textAlign: 'center',
   },
 });
