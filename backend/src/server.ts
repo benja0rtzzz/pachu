@@ -3,9 +3,11 @@ import express from 'express';
 import { config } from './config.js';
 import { OllamaAdapter } from './llm/ollama.js';
 import { healthRouter } from './routes/health.js';
+import { openDatabase } from './store/db.js';
 import { attachCoachWs } from './ws/coach.js';
 
 async function main() {
+  openDatabase();
   const startedAt = Date.now();
   const llm = new OllamaAdapter();
 

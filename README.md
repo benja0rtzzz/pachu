@@ -13,7 +13,7 @@ The user provides their own notes; the system extracts terms, schedules them wit
 ```
 pachu/
   app/        # React Native + Expo
-  backend/    # Node 20 + TypeScript + Express + ws + better-sqlite3
+  backend/    # Node + Bun + TypeScript + Express + ws + `bun:sqlite`
   shared/     # cross-cutting TypeScript types
 ```
 

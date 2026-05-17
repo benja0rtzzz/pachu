@@ -33,7 +33,7 @@ flowchart TB
             FC["Flashcards (in-house)"]
             FSRS["ts-fsrs (npm)"]
         end
-        Store[("bun:sqlite — terms, reviews, sessions")]
+        Store[("bun:sqlite — notes, terms (+ FSRS JSON), reviews, sessions")]
     end
 
     Ollama["Ollama (local LLM, default gemma4:26b)"]
@@ -160,6 +160,19 @@ pachu/
   AGENTS.md                     # team coordination + live progress board
   README.md
 ```
+
+## SQLite persistence (`backend/src/store/`)
+
+SQLite file: `PACHU_DATA_DIR/pachu.sqlite` (default `./data`; see `AGENTS.md`). Tables:
+
+| Table | Purpose |
+| ----- | -------- |
+| `notes_files` | Uploaded/pasted source: `title`, **`raw_text`**, `byte_length`, `created_at`. Tier-1 checks use `raw_text` as the notes blob. |
+| `terms` | One row per extracted term (columns mirror `shared` `Term`: `term`, `definition`, `source_span`, `style_anchor`, …). **FSRS `Card` state lives here too:** `fsrs_card_json` (nullable until the memory layer first writes scheduling state) and `fsrs_card_updated_at`. No separate card table — one row per term. |
+| `sessions` | A single puzzle run (`puzzle_kind`, `started_at` / `ended_at`). |
+| `review_events` | Append-only grading log (`rating` 1–4, `ms`, `hints_used`, optional `session_id`). |
+
+On startup, `db.ts` applies `schema.sql` and runs lightweight **migrations** (e.g. adding new columns to an existing `terms` table from an older checkout).
 
 ## Key file sketches
 
