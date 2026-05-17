@@ -188,6 +188,26 @@ export interface IngestResponse {
   space: Space;
 }
 
+/**
+ * `POST /spaces/:id/extract` response body.
+ *
+ * Runs the LLM term extractor against the space's stored raw text, runs the tier-1 span
+ * verifier on each candidate, persists the survivors as `Term` rows, and returns the
+ * refreshed `Space`. The request has no body — the space id is in the URL, and the
+ * extractor's own knobs (model, max terms) live server-side.
+ *
+ * `rejectedCount` is the number of LLM candidates that failed verification; surfaced
+ * for diagnostics during the demo so a judge can see the anti-hallucination contract
+ * actually filtering. `acceptedCount === space.summary.termCount` when extraction runs
+ * against a fresh space, but diverges if we ever support re-extraction on top of
+ * existing terms.
+ */
+export interface ExtractTermsResponse {
+  space: Space;
+  acceptedCount: number;
+  rejectedCount: number;
+}
+
 /** `POST /puzzles/generate` request body. */
 export interface GeneratePuzzleRequest {
   kind: PuzzleKind;

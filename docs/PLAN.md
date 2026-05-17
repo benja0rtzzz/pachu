@@ -64,8 +64,7 @@ flowchart TB
   interface in `backend/src/engines/*`. Same shape for all: `generate(input) -> Puzzle`,
   `validate(puzzle) -> bool`. Swappable.
 - **Outer layer (RN ↔ backend)**: HTTP for request/response (generate puzzle, fetch notes,
-  finish session) + WebSocket for the live coach stream (`hint`, `mistake_observed`,
-  `tier_up`).
+  finish session) + WebSocket for the live coach stream (`hint`, `mistake`, `hello`).
 
 ## Data flow for one session
 

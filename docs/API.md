@@ -23,7 +23,7 @@ Service banner. Useful for "did the right thing answer the port?".
 ```json
 {
   "service": "pachu-backend",
-  "try": ["/health", "/spaces", "/notes/ingest", "/coach (WS)"]
+  "try": ["/health", "/spaces", "/notes/ingest", "/puzzles/generate", "/coach (WS)"]
 }
 ```
 
@@ -165,6 +165,45 @@ via the FK clauses in `schema.sql`. Irreversible.
 - `204 No Content` — deleted.
 - `404 Not Found` — no such space.
 
+### `POST /spaces/:id/extract`
+
+Runs the LLM term extractor against the space's stored raw text, applies the
+tier-1 span verifier (`source_span` and `style_anchor` must be literal
+substrings of the notes; the `style_anchor` must contain the term), and
+persists the survivors as `terms` rows. No request body — the soft cap on
+returned candidates is server-side (currently 20).
+
+The route deliberately does NOT force-fit. If the LLM produces zero candidates
+that pass verification, it returns `422` instead of inserting noise into the
+store. The "user's notes are the source of truth" guarantee is non-negotiable.
+
+**Responses**
+
+- `200 OK` — `ExtractTermsResponse`:
+
+  ```json
+  {
+    "space": { "id": "...", "summary": { "termCount": 12, ... } },
+    "acceptedCount": 12,
+    "rejectedCount": 3
+  }
+  ```
+
+  `rejectedCount` surfaces how many LLM candidates the tier-1 verifier dropped
+  (e.g. paraphrased `source_span`, hallucinated terms). Useful during the demo
+  to show the anti-hallucination contract actually filtering.
+
+- `404 Not Found` — no such space.
+- `409 Conflict` — the space already has at least one extracted term.
+  Re-extraction is intentionally blocked to avoid duplicate rows and orphaned
+  FSRS state; `DELETE /spaces/:id` + re-ingest to retry.
+- `422 Unprocessable Entity` — every LLM candidate was rejected by the verifier
+  (or the LLM returned nothing parseable). Response includes `rejectedCount`
+  so the client can show "the LLM produced N candidates but none passed
+  verification — try richer or longer notes."
+- `502 Bad Gateway` — the LLM adapter threw (Ollama unreachable, HTTP timeout,
+  etc.). The store is left untouched.
+
 ### `GET /notes/:id` (internal)
 
 Returns a `NotesFile & { rawText: string }`. Kept around for the extraction
@@ -218,8 +257,10 @@ In response to `{"type":"hint_request", ...}` — the payload is the promoted
 - tier 2 (`pattern`) — deterministic structural hint (length + first letter)
 - tier 3 (`definition`) — definition reveal
 
-A `mistake_observed` event will be added when the orchestrator starts
-forwarding solver telemetry. Not implemented yet.
+The server may forward solver telemetry back to the client as
+`{ type: 'mistake', termId, observation }` once the orchestrator starts
+processing client-emitted mistakes. Not implemented yet — clients only see
+`hello`, `hint`, and `pong` today.
 
 ### Client → server (`CoachClientMessage`)
 
@@ -328,10 +369,10 @@ Flashcards the user picks directly.
 
 ## Not yet wired (don't expect these to answer)
 
-These items are still on the Person A / B boards in `AGENTS.md`; this section
-is here so callers don't code against guesses.
+These items are still on the boards in `AGENTS.md`; this section is here so
+callers don't code against guesses.
 
-- Term extraction call (path TBD) — runs Person B's `extractTerms` against a
-  stored space and persists the verified candidates. Until this lands,
-  `/puzzles/generate` 422s on freshly-ingested spaces because the term
-  picker has nothing to pick from.
+- Server→client `mistake` forwarding on `/coach`. The wire type already exists
+  on `CoachEvent` as `{ type: 'mistake', termId, observation }`; the
+  orchestrator just doesn't emit one yet. Will land when the app starts
+  streaming per-cell mistake events to the backend.
